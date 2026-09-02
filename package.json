@@ -20,7 +20,8 @@
     "node": ">=16"
   },
   "scripts": {
-    "_test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node test/index.js",
+    "pretest": "npm run build",
     "dev": "nodemon",
     "start": "node scripts/run-cli.js",
     "clean": "rm -fr dist",

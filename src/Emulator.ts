@@ -633,12 +633,30 @@ class Block{
             length = this.readI32()
         }
         
+        let end = this.ip + length;
         let str = "";
-        let start = this.ip;
-        for(let i = start; i < start + length; i++){
-            str += String.fromCharCode(this._b(i));
+        // `length` is a UTF-8 byte count. Decode the bytes back into a string,
+        // rebuilding multi-byte sequences (and surrogate pairs for astral code
+        // points). Must mirror the UTF-8 encoding in Strings.getData().
+        while(this.ip < end){
+            let b0 = this._b(this.ip++);
+            if(b0 < 0x80){
+                str += String.fromCharCode(b0);
+            }else if(b0 < 0xE0){
+                let b1 = this._b(this.ip++) & 0x3F;
+                str += String.fromCharCode(((b0 & 0x1F) << 6) | b1);
+            }else if(b0 < 0xF0){
+                let b1 = this._b(this.ip++) & 0x3F;
+                let b2 = this._b(this.ip++) & 0x3F;
+                str += String.fromCharCode(((b0 & 0x0F) << 12) | (b1 << 6) | b2);
+            }else{
+                let b1 = this._b(this.ip++) & 0x3F;
+                let b2 = this._b(this.ip++) & 0x3F;
+                let b3 = this._b(this.ip++) & 0x3F;
+                let cp = (((b0 & 0x07) << 18) | (b1 << 12) | (b2 << 6) | b3) - 0x10000;
+                str += String.fromCharCode(0xD800 + (cp >> 10), 0xDC00 + (cp & 0x3FF));
+            }
         }
-        this.ip += length;
         strings.push(str);
     }
 

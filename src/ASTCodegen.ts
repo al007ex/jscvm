@@ -1072,7 +1072,18 @@ export function GenerateProperty(node: Property, scope: Scope){
 }
 
 export function GenerateArrayExpression(node: ArrayExpression, scope: Scope){
-    node.elements.forEach(child => scope.generate(child));
+    node.elements.forEach(child => {
+        if(child === null){
+            // Array elision, e.g. [1, , 3]. The stack machine builds a dense
+            // array, so materialise the hole as `undefined`: arr[i] reads and
+            // .length then match a real hole (only hole-detection via `in` /
+            // sparse iteration differs, which obfuscated code rarely relies on).
+            emitI8(scope, 0);
+            emitVoid(scope);
+        }else{
+            scope.generate(child);
+        }
+    });
     emitMakeArray(scope, node.elements.length);
 }
 
@@ -1142,7 +1153,14 @@ export function GenerateUnaryExpression(node: UnaryExpression, scope: Scope){
         let memExp = node.argument;
         if(memExp.type === "MemberExpression"){
             scope.generate(memExp.object);
-            scope.generate(memExp.property);
+            let property = memExp.property;
+            if(property.type === "Identifier" && !memExp.computed){
+                // delete obj.a -> the key is the literal "a", not a variable
+                // reference (mirrors GenerateMemberExpression's computed check).
+                emitString(scope, scope.getStringId(property.name));
+            }else{
+                scope.generate(property);
+            }
             emitdelete(scope);
         }else{
             throw("cant delete on not a member expression");

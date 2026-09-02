@@ -44,16 +44,20 @@ export class Strings {
         this.strings.forEach(str => {
             buffer.push(Op.RegisterString);
 
-            let strLength = str.length;
-            if(strLength >= 0xff){
+            let bytes = Buffer.from(str, "utf8");
+            let byteLength = bytes.length;
+            if(byteLength >= 0xff){
                 buffer.push(0xff);
-                let bytes = i32Bytes(strLength);
-                bytes.forEach(byte => buffer.push(byte));
+                let lenBytes = i32Bytes(byteLength);
+                lenBytes.forEach(b => buffer.push(b));
             }else{
-                buffer.push(strLength);
+                buffer.push(byteLength);
             }
 
-            for(let i = 0 ; i < str.length; i++) buffer.push(str.charCodeAt(i));
+            // Serialise as UTF-8 so characters above U+00FF (CJK, emoji, ...)
+            // survive; the byte length above tells the runtime how many bytes
+            // to consume. Decoder lives in Emulator._loadString and must match.
+            for(let i = 0 ; i < byteLength; i++) buffer.push(bytes[i]);
         })
         
         buffer.push(Op.JumpToBlock);

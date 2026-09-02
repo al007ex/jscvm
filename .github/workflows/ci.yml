@@ -21,7 +21,6 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
 
-      - name: Smoke test
-        run: node -e "require('./dist/index.js').obfuscate('globalThis.x=41+1;',{minify:false}).then(c=>{const vm=require('vm');const ctx={Object,Function,Array,String,Math,RegExp,Reflect,Uint8Array,Float64Array,Buffer,module:{exports:{}}};ctx.globalThis=ctx;vm.createContext(ctx);vm.runInContext(c,ctx);if(ctx.x!==42)throw new Error('got '+ctx.x);console.log('ok',ctx.x)})"
+      - name: Test (builds via pretest, then runs the regression suite)
+        run: npm test

@@ -1,0 +1,209 @@
+#!/usr/bin/env node
+"use strict";
+
+// ---------------------------------------------------------------------------
+// jscvm regression suite. Zero dependencies: compiles each snippet with the
+// public `obfuscate()` API, runs the resulting bundle in a fresh `vm` context,
+// and asserts on the value the snippet exposes via `globalThis.r`.
+//
+// Run with `npm test` (the `pretest` script builds `dist/` first). Exits non-
+// zero if any case fails.
+//
+// Coverage: the supported-language matrix, the two bugs fixed alongside this
+// suite (UTF-8 string literals + sparse array literals), a smoke pass over the
+// default minify+obfuscate pipeline, and the documented "unsupported syntax
+// fails at compile time" contract.
+// ---------------------------------------------------------------------------
+
+const path = require("path");
+const vm = require("vm");
+
+const distIndex = path.join(__dirname, "..", "dist", "index.js");
+let obfuscate;
+try {
+    obfuscate = require(distIndex).obfuscate;
+} catch (err) {
+    console.error("Could not load " + distIndex + " — run `npm run build` first.");
+    console.error(String(err && err.message ? err.message : err));
+    process.exit(1);
+}
+
+let passed = 0;
+let failed = 0;
+
+function makeContext() {
+    const ctx = {
+        Object, Function, Array, String, Number, Boolean, Math, RegExp, Reflect,
+        JSON, Symbol, Date, Error, TypeError, Uint8Array, Float64Array, Buffer,
+        Promise, console, setTimeout, clearTimeout,
+        module: { exports: {} }
+    };
+    ctx.globalThis = ctx;
+    vm.createContext(ctx);
+    return ctx;
+}
+
+function fmt(v) {
+    if (typeof v === "string") return JSON.stringify(v);
+    try { return String(v); } catch (_) { return Object.prototype.toString.call(v); }
+}
+
+function equal(a, b) {
+    if (a === b) return true;
+    if (typeof a === "number" && typeof b === "number") return a !== a && b !== b; // NaN
+    return false;
+}
+
+function record(name, cond, detail) {
+    if (cond) {
+        passed++;
+    } else {
+        failed++;
+        console.log("FAIL  " + name + (detail ? "  — " + detail : ""));
+    }
+}
+
+// Compile + run `src`, then assert `globalThis.r` equals `expected`.
+// opts: { minify?: boolean, waitMs?: number } — waitMs lets async snippets settle.
+async function expect(name, src, expected, opts) {
+    opts = opts || {};
+    try {
+        const code = await obfuscate(src, { minify: opts.minify === true });
+        const ctx = makeContext();
+        vm.runInContext(code, ctx);
+        if (opts.waitMs) await new Promise(function (r) { setTimeout(r, opts.waitMs); });
+        record(name, equal(ctx.r, expected), equal(ctx.r, expected) ? "" : ("expected " + fmt(expected) + " got " + fmt(ctx.r)));
+    } catch (e) {
+        record(name, false, "threw: " + (e && e.message ? e.message : e));
+    }
+}
+
+// Assert that compilation rejects (documented behaviour for unsupported syntax).
+// `needle`, if given, must appear in the error message.
+async function expectCompileError(name, src, needle) {
+    try {
+        await obfuscate(src, { minify: false });
+        record(name, false, "expected a compile error, but it compiled");
+    } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        record(name, !needle || msg.indexOf(needle) !== -1, needle ? ("message was: " + msg) : "");
+    }
+}
+
+async function main() {
+    // ---- arithmetic / operators / evaluation order ----
+    await expect("arithmetic", "globalThis.r = 41 + 1;", 42);
+    await expect("operator precedence", "globalThis.r = 2 + 3 * 4;", 14);
+    await expect("left-to-right eval order",
+        "var log=[];function s(n){log.push(n);return n;}s(1)+s(2)*s(3);globalThis.r=log.join(',');", "1,2,3");
+    await expect("unary minus/negate", "globalThis.r = -5 * -3;", 15);
+    await expect("float precision", "globalThis.r = 0.1 + 0.2;", 0.30000000000000004);
+    await expect("i32 boundary", "globalThis.r = 2147483647 + 1;", 2147483648);
+    await expect("bitwise", "globalThis.r = (5 & 3) | (8 ^ 1) | (1 << 4);", 25);
+    await expect("exponent", "globalThis.r = 2 ** 10;", 1024);
+    await expect("compound assign (var)", "var x=10;x+=5;x*=2;x-=1;globalThis.r=x;", 29);
+    await expect("compound assign (member)", "var o={n:3};o.n*=4;o.n+=1;globalThis.r=o.n;", 13);
+    await expect("prefix/postfix update", "var i=5;var a=i++;var b=++i;globalThis.r=a+'/'+b+'/'+i;", "5/7/7");
+
+    // ---- functions / closures / recursion ----
+    await expect("function + closure", "function mk(a){return function(b){return a+b;};}globalThis.r=mk(10)(5);", 15);
+    await expect("recursion (fib)", "function fib(n){return n<2?n:fib(n-1)+fib(n-2);}globalThis.r=fib(10);", 55);
+    await expect("hoisted function decls", "globalThis.r=f();function f(){return g();}function g(){return 3;}", 3);
+    await expect("nested closure counter",
+        "function mk(){var c=0;return{inc:function(){return ++c;},get:function(){return c;}};}var m=mk();m.inc();m.inc();globalThis.r=m.get();", 2);
+    await expect("param/var shadow", "function f(x){var x=x+1;return x;}globalThis.r=f(5);", 6);
+    await expect("arguments object", "function f(){return arguments.length;}globalThis.r=f(1,2,3);", 3);
+    await expect("string concat return", "function f(){return 'hello'+' '+'world';}globalThis.r=f();", "hello world");
+
+    // ---- control flow ----
+    await expect("for loop sum", "var s=0;for(var i=0;i<=100;i++)s+=i;globalThis.r=s;", 5050);
+    await expect("while + break + continue",
+        "var s=0,i=0;while(true){i++;if(i>10)break;if(i%2===0)continue;s+=i;}globalThis.r=s;", 25);
+    await expect("do-while", "var i=0,s=0;do{s+=i;i++;}while(i<5);globalThis.r=s;", 10);
+    await expect("ternary chain", "var n=5;globalThis.r=n<0?'neg':n===0?'zero':'pos';", "pos");
+    await expect("logical short-circuit",
+        "var log=[];function t(v){return function(){log.push(v);return v;};}var a=t(0)()&&t(1)();var b=t(2)()||t(3)();globalThis.r=log.join(',');", "0,2");
+    await expect("switch match+default", "function d(n){switch(n){case 1:return 'a';case 2:return 'b';default:return 'z';}}globalThis.r=d(2)+d(9);", "bz");
+    await expect("switch fall-through", "var o='';switch(1){case 1:o+='a';case 2:o+='b';break;case 3:o+='c';}globalThis.r=o;", "ab");
+
+    // ---- exceptions / finally ----
+    await expect("try/catch", "try{throw new Error('x');}catch(e){globalThis.r=e.message;}", "x");
+    await expect("try/finally + return", "function f(){try{return 1;}finally{globalThis.fin=true;}}var v=f();globalThis.r=v+'/'+globalThis.fin;", "1/true");
+    await expect("throw routed through finally",
+        "var log=[];function f(){try{try{throw 'e';}finally{log.push('inner');}}catch(x){log.push('caught:'+x);}}f();globalThis.r=log.join(',');", "inner,caught:e");
+
+    // ---- objects / arrays / members ----
+    await expect("object literal + method (this)", "var o={x:1,getX:function(){return this.x;}};globalThis.r=o.getX();", 1);
+    await expect("object shorthand", "var x=1,y=2;var o={x,y};globalThis.r=o.x+o.y;", 3);
+    await expect("getter/setter", "var o={_v:0,get v(){return this._v;},set v(x){this._v=x*2;}};o.v=5;globalThis.r=o.v;", 10);
+    await expect("computed member get/set", "var o={};var k='key';o[k]=42;globalThis.r=o.key;", 42);
+    await expect("array map/reduce", "globalThis.r=[1,2,3].map(function(x){return x*2;}).reduce(function(a,b){return a+b;},0);", 12);
+    await expect("delete operator", "var o={a:1};delete o.a;globalThis.r='a' in o;", false);
+    await expect("in operator", "globalThis.r='b' in {b:1};", true);
+    await expect("new + prototype", "function P(x){this.x=x;}P.prototype.get=function(){return this.x;};globalThis.r=new P(5).get();", 5);
+    await expect("instanceof", "globalThis.r=[] instanceof Array;", true);
+    await expect("regex replace", "globalThis.r='a1b2'.replace(/[0-9]/g,'#');", "a#b#");
+
+    // ---- let / const lowering ----
+    await expect("let/const block scope", "let a=1;{let a=2;globalThis.inner=a;}globalThis.r=globalThis.inner+'/'+a;", "2/1");
+    await expect("let per-iteration binding",
+        "var fns=[];for(let i=0;i<3;i++){fns.push(function(){return i;});}globalThis.r=fns.map(function(f){return f();}).join(',');", "0,1,2");
+    await expect("var hoisting", "globalThis.r=(function(){var x=typeof y;var y=1;return x;})();", "undefined");
+
+    // ---- arrows / template literals / typeof ----
+    await expect("arrow lexical this", "var o={x:9,f:function(){var g=()=>this.x;return g();}};globalThis.r=o.f();", 9);
+    await expect("arrow concise body", "var sq=x=>x*x;globalThis.r=sq(6);", 36);
+    await expect("template literal", "var n='world';globalThis.r=`hi ${n} ${1+2}`;", "hi world 3");
+    await expect("typeof undefined global", "globalThis.r=typeof somethingUndefined;", "undefined");
+    await expect("typeof local", "var n=1;globalThis.r=typeof n;", "number");
+
+    // ---- async / await (settles on a later tick) ----
+    await expect("async/await", "async function f(){return await Promise.resolve(7);}f().then(function(v){globalThis.r=v;});", 7, { waitMs: 50 });
+
+    // ---- REGRESSION: UTF-8 string literals (bug #1) ----
+    await expect("unicode: latin-1 (é)", "globalThis.r='café';", "café");
+    await expect("unicode: CJK", "globalThis.r='你好';", "你好");
+    await expect("unicode: emoji (astral/surrogate pair)", "globalThis.r='hi 😀';", "hi 😀");
+    await expect("unicode: mixed", "globalThis.r='aé你😀z';", "aé你😀z");
+    await expect("unicode: string .length preserved", "globalThis.r='你好😀'.length;", 4);
+    await expect("unicode: as object key (computed)", "var o={};o['你']=1;globalThis.r=Object.keys(o)[0];", "你");
+    await expect("unicode: as identifier key", "var o={你:1};globalThis.r=o.你;", 1);
+    await expect("unicode: in template literal", "var n='世界';globalThis.r=`你好 ${n}`;", "你好 世界");
+    await expect("unicode: long multibyte (5-byte length path)",
+        "var s=new Array(201).join('你');globalThis.r=s.length+'/'+ (s.charAt(100)==='你'?'ok':'bad');", "200/ok");
+    await expect("ascii still round-trips", "globalThis.r='the quick brown fox';", "the quick brown fox");
+
+    // ---- REGRESSION: sparse array literals (bug #2) ----
+    await expect("sparse array: length + hole reads undefined", "var a=[1,,3];globalThis.r=a.length+'|'+String(a[1]);", "3|undefined");
+    await expect("sparse array: leading hole", "var a=[,,5];globalThis.r=a.length+'|'+a[2];", "3|5");
+    await expect("sparse array: trailing hole preserved", "var a=[1,2,,];globalThis.r=a.length;", 3);
+    await expect("sparse array: values around holes intact", "var a=[10,,20,,30];globalThis.r=a[0]+a[2]+a[4];", 60);
+
+    // ---- default minify + obfuscate pipeline smoke (guards the shipping path) ----
+    await expect("minify: arithmetic", "globalThis.r=41+1;", 42, { minify: true });
+    await expect("minify: closure", "function mk(a){return function(b){return a+b;};}globalThis.r=mk(10)(5);", 15, { minify: true });
+    await expect("minify: array.map", "globalThis.r=[1,2,3].map(function(x){return x*2;}).join(',');", "2,4,6", { minify: true });
+    await expect("minify: object method", "var o={x:7,f:function(){return this.x;}};globalThis.r=o.f();", 7, { minify: true });
+    await expect("minify: try/catch", "try{throw new Error('boom');}catch(e){globalThis.r=e.message;}", "boom", { minify: true });
+    await expect("minify: getter", "var o={_v:3,get v(){return this._v*2;}};globalThis.r=o.v;", 6, { minify: true });
+    await expect("minify: unicode round-trip", "globalThis.r='你好 😀';", "你好 😀", { minify: true });
+
+    // ---- documented contract: unsupported syntax fails at compile time ----
+    await expectCompileError("unsupported: spread in call", "Math.max(...[1,2,3]);", "SpreadElement");
+    await expectCompileError("unsupported: spread in array", "var a=[...[1,2]];", "SpreadElement");
+    await expectCompileError("unsupported: optional chaining", "var o=null;o?.x;", "ChainExpression");
+    await expectCompileError("unsupported: for-of", "for(var x of [1,2,3]){}", "ForOfStatement");
+    await expectCompileError("unsupported: labeled statement", "outer:for(var i=0;i<1;i++){break outer;}", "LabeledStatement");
+    await expectCompileError("unsupported: array destructuring", "var [a,b]=[1,2];");
+    await expectCompileError("unsupported: default parameter", "function f(a,b=5){return a+b;}f(1);", "parameter type");
+
+    // ---- summary ----
+    const total = passed + failed;
+    console.log("\n" + passed + "/" + total + " passed" + (failed ? ("  (" + failed + " failed)") : ""));
+    if (failed) process.exit(1);
+}
+
+main().catch(function (err) {
+    console.error("Test runner crashed:", err && err.stack ? err.stack : err);
+    process.exit(1);
+});

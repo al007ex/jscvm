@@ -22,6 +22,8 @@
   "scripts": {
     "test": "node test/index.js",
     "pretest": "npm run build",
+    "fuzz": "node test/fuzz.js",
+    "prefuzz": "npm run build",
     "dev": "nodemon",
     "start": "node scripts/run-cli.js",
     "clean": "rm -fr dist",
@@ -53,6 +55,9 @@
   "dependencies": {
     "@babel/core": "^7.29.7",
     "@babel/plugin-transform-block-scoping": "^7.29.7",
+    "@babel/plugin-transform-logical-assignment-operators": "^7.29.7",
+    "@babel/plugin-transform-nullish-coalescing-operator": "^7.29.7",
+    "@babel/plugin-transform-optional-chaining": "^7.29.7",
     "acorn": "^8.4.1",
     "babel-plugin-transform-async-to-promises": "^0.8.18",
     "escodegen": "^2.0.0",

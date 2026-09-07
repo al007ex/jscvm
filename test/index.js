@@ -144,6 +144,12 @@ async function main() {
     await expect("instanceof", "globalThis.r=[] instanceof Array;", true);
     await expect("regex replace", "globalThis.r='a1b2'.replace(/[0-9]/g,'#');", "a#b#");
 
+    // REGRESSION: computed method calls must evaluate the key, not bake in the
+    // identifier as a literal property name (obj[k]() / arr[i]()).
+    await expect("computed method call obj[k]()", "var o={hi:function(){return 42;}};var k='hi';globalThis.r=o[k]();", 42);
+    await expect("computed method call arr[i]()", "var a=[function(){return 9;}];globalThis.r=a[0]();", 9);
+    await expect("computed method call with args", "var o={add:function(a,b){return a+b;}};var m='add';globalThis.r=o[m](2,3);", 5);
+
     // ---- let / const lowering ----
     await expect("let/const block scope", "let a=1;{let a=2;globalThis.inner=a;}globalThis.r=globalThis.inner+'/'+a;", "2/1");
     await expect("let per-iteration binding",
@@ -159,6 +165,31 @@ async function main() {
 
     // ---- async / await (settles on a later tick) ----
     await expect("async/await", "async function f(){return await Promise.resolve(7);}f().then(function(v){globalThis.r=v;});", 7, { waitMs: 50 });
+
+    // ---- optional chaining / nullish / logical assignment (lowered in Transpile) ----
+    await expect("optional chaining: null base", "var o=null;globalThis.r=o?.x;", undefined);
+    await expect("optional chaining: deep present", "var o={a:{b:5}};globalThis.r=o?.a?.b;", 5);
+    await expect("optional chaining: short-circuit mid-chain", "var o={a:null};globalThis.r=o?.a?.b?.c;", undefined);
+    await expect("optional chaining: call present", "var o={f:function(){return 7;}};globalThis.r=o.f?.();", 7);
+    await expect("optional chaining: call missing", "var o={};globalThis.r=o.f?.();", undefined);
+    await expect("optional chaining: preserves this", "var o={n:11,get:function(){return this.n;}};globalThis.r=o?.get();", 11);
+    await expect("optional chaining: computed member", "var o={x:{y:3}};var k='x';globalThis.r=o?.[k]?.y;", 3);
+    await expect("optional chaining: short-circuits side effects",
+        "var hits=0;function boom(){hits++;return 0;}var o=null;o?.a[boom()];globalThis.r=hits;", 0);
+
+    await expect("nullish: null falls through", "globalThis.r=null??'d';", "d");
+    await expect("nullish: undefined falls through", "var u;globalThis.r=u??'d';", "d");
+    await expect("nullish: keeps 0", "globalThis.r=0??'d';", 0);
+    await expect("nullish: keeps empty string", "globalThis.r=''??'d';", "");
+    await expect("nullish: with optional chaining", "var o={x:null};globalThis.r=o?.x??'fallback';", "fallback");
+
+    await expect("logical assign: ||= replaces falsy", "var a=0;a||=5;globalThis.r=a;", 5);
+    await expect("logical assign: ||= keeps truthy", "var a=3;a||=5;globalThis.r=a;", 3);
+    await expect("logical assign: &&= replaces truthy", "var a=3;a&&=5;globalThis.r=a;", 5);
+    await expect("logical assign: &&= keeps falsy", "var a=0;a&&=5;globalThis.r=a;", 0);
+    await expect("logical assign: ??= replaces nullish", "var a=null;a??=5;globalThis.r=a;", 5);
+    await expect("logical assign: ??= keeps 0", "var a=0;a??=5;globalThis.r=a;", 0);
+    await expect("logical assign: ??= on member (eval once)", "var o={n:null};o.n??=8;globalThis.r=o.n;", 8);
 
     // ---- REGRESSION: UTF-8 string literals (bug #1) ----
     await expect("unicode: latin-1 (é)", "globalThis.r='café';", "café");
@@ -191,11 +222,18 @@ async function main() {
     // ---- documented contract: unsupported syntax fails at compile time ----
     await expectCompileError("unsupported: spread in call", "Math.max(...[1,2,3]);", "SpreadElement");
     await expectCompileError("unsupported: spread in array", "var a=[...[1,2]];", "SpreadElement");
-    await expectCompileError("unsupported: optional chaining", "var o=null;o?.x;", "ChainExpression");
     await expectCompileError("unsupported: for-of", "for(var x of [1,2,3]){}", "ForOfStatement");
     await expectCompileError("unsupported: labeled statement", "outer:for(var i=0;i<1;i++){break outer;}", "LabeledStatement");
     await expectCompileError("unsupported: array destructuring", "var [a,b]=[1,2];");
     await expectCompileError("unsupported: default parameter", "function f(a,b=5){return a+b;}f(1);", "parameter type");
+
+    // ---- differential fuzzing (fixed seed => deterministic here / in CI) ----
+    // Generates random programs over the supported grammar and checks the VM's
+    // result against native Node. `npm run fuzz` runs larger, seedable batches.
+    const { runFuzz } = require("./fuzz");
+    const fz = await runFuzz({ iterations: 500, seed: 0xC0FFEE, quiet: true });
+    record("differential fuzz (500 cases, seed 0xC0FFEE)", fz.failed === 0,
+        fz.failed === 0 ? "" : (fz.failed + " mismatch(es); first: " + fz.failures[0]));
 
     // ---- summary ----
     const total = passed + failed;

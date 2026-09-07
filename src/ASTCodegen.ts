@@ -544,11 +544,13 @@ export function GenerateCallExpression(node: CallExpression, scope: Scope){
             break;
         }
         case "MemberExpression": {
-            if(callee.property.type === "Identifier"){
+            if(callee.property.type === "Identifier" && !callee.computed){
                 //load its property as a string
                 let id = scope.getStringId(callee.property.name);
                 emitString(scope, id);
             }else{
+                // Computed call, e.g. obj[key]() / arr[i]() — evaluate the
+                // property expression instead of treating the name as a literal.
                 scope.generate(callee.property);
             }
             scope.generate(callee.object);

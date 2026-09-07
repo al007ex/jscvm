@@ -9,6 +9,12 @@
 //   - let / const        -> function-scoped var with correct per-iteration
 //                           bindings and TDZ (@babel/plugin-transform-block-scoping)
 //   - async / await      -> Promise chains (babel-plugin-transform-async-to-promises)
+//   - a?.b / a?.() / a?.[b]  -> conditionals + temp vars
+//                           (@babel/plugin-transform-optional-chaining)
+//   - a ?? b             -> conditional on null/undefined
+//                           (@babel/plugin-transform-nullish-coalescing-operator)
+//   - a &&= / ||= / ??= b -> short-circuit assignment
+//                           (@babel/plugin-transform-logical-assignment-operators)
 //
 // It is intentionally structured so more lowering steps can be added later: add
 // a step to `transpileForVm` and, if it introduces runtime helpers, follow the
@@ -26,6 +32,9 @@ let _deps: {
     babel: any;
     asyncPlugin: any;
     blockScopingPlugin: any;
+    optionalChainingPlugin: any;
+    nullishCoalescingPlugin: any;
+    logicalAssignmentPlugin: any;
     helpersSource: string;
 } | null = null;
 
@@ -37,6 +46,9 @@ function deps() {
             babel: require("@babel/core"),
             asyncPlugin: require("babel-plugin-transform-async-to-promises"),
             blockScopingPlugin: require("@babel/plugin-transform-block-scoping"),
+            optionalChainingPlugin: require("@babel/plugin-transform-optional-chaining"),
+            nullishCoalescingPlugin: require("@babel/plugin-transform-nullish-coalescing-operator"),
+            logicalAssignmentPlugin: require("@babel/plugin-transform-logical-assignment-operators"),
             helpersSource: require("babel-plugin-transform-async-to-promises/helpers-string").code
         };
     }
@@ -123,7 +135,24 @@ function resolveAsyncHelpers(code: string): string {
 export function transpileForVm(code: string): string {
     let out = code;
 
-    // 1. Lower async/await to Promise chains. On failure, leave async untouched
+    // 1. Lower modern operator syntax to the VM's supported subset, before the
+    //    larger async / block-scoping transforms run over the result. Each step
+    //    degrades gracefully: on failure the source is left untouched and the VM
+    //    reports a clear compile error on the construct it can't handle.
+    //
+    //    Logical assignment runs first because `a ??= b` lowers to `a ?? (a = b)`
+    //    — it emits `??`, which the nullish-coalescing step below then removes.
+    const logicalAssignLowered = tryTransform(out, [deps().logicalAssignmentPlugin]);
+    if (logicalAssignLowered !== null) out = logicalAssignLowered;
+
+    //    Optional chaining (`a?.b`, `a?.()`, `a?.[b]`) and nullish coalescing
+    //    (`a ?? b`) desugar to conditionals + temp vars the VM already supports.
+    //    Optional chaining is listed first so its output is in place before the
+    //    nullish visitor runs in the same pass.
+    const optionalNullishLowered = tryTransform(out, [deps().optionalChainingPlugin, deps().nullishCoalescingPlugin]);
+    if (optionalNullishLowered !== null) out = optionalNullishLowered;
+
+    // 2. Lower async/await to Promise chains. On failure, leave async untouched
     //    (the VM will then report a clear error on the remaining `await`), and
     //    still run block scoping below so let/const keeps working.
     const asyncLowered = tryTransform(out, [[deps().asyncPlugin, { externalHelpers: true }]]);
@@ -131,8 +160,8 @@ export function transpileForVm(code: string): string {
         out = resolveAsyncHelpers(asyncLowered);
     }
 
-    // 2. Lower let/const across everything, including any const/let in the
-    //    inlined async helpers.
+    // 3. Lower let/const across everything, including any const/let introduced by
+    //    the transforms above (temp vars) or in the inlined async helpers.
     const blockLowered = tryTransform(out, [deps().blockScopingPlugin]);
     if (blockLowered !== null) out = blockLowered;
 

@@ -142,10 +142,20 @@ function makeGen(rng) {
         return lhs + pick(ASSIGN_OPS) + "(" + expr(2) + ");";
     }
 
+    // for…in / for…of loops over fixed structures (bounded — no infinite loops).
+    function loopStmt() {
+        switch ((rng() * 3) | 0) {
+            case 0: return "for(var _fk in obj){m1+=(\"\"+_fk);}";
+            case 1: return "for(var _fx of arr){m2+=_fx;}";
+            default: return "for(var _fc of \"ab\"){m3+=_fc;}";
+        }
+    }
+
     function program() {
         const k = (rng() * 4) | 0;
         let body = "";
         for (let i = 0; i < k; i++) body += stmt();
+        if (chance(0.3)) body += loopStmt();
         const depth = 2 + ((rng() * 3) | 0);
         return { body: body, tail: "globalThis.r=(" + expr(depth) + ");" };
     }

@@ -241,6 +241,25 @@ async function main() {
     await expect("object spread override", "var a={x:1,y:1};globalThis.r=({...a,y:9}).y;", 9);
     await expect("spread from string", "globalThis.r=[...'abc'].join('-');", "a-b-c");
 
+    // ---- for…of / for…in / object rest ----
+    await expect("for-of array", "var s=0;for(var x of [1,2,3])s+=x;globalThis.r=s;", 6);
+    await expect("for-of string", "var s='';for(var ch of 'abc')s+=ch;globalThis.r=s;", "abc");
+    await expect("for-of break/continue", "var s=0;for(var x of [1,2,3,4,5]){if(x===2)continue;if(x===5)break;s+=x;}globalThis.r=s;", 8);
+    await expect("for-of Set", "var s=0;for(var x of new Set([1,2,2,3]))s+=x;globalThis.r=s;", 6);
+    await expect("for-of Map entries", "var s='';for(var e of new Map([['a',1],['b',2]]))s+=e[0]+e[1];globalThis.r=s;", "a1b2");
+    await expect("for-of destructuring", "var s=0;for(var [a,b] of [[1,2],[3,4]])s+=a*b;globalThis.r=s;", 14);
+    await expect("for-of let per-iteration", "var f=[];for(let x of [1,2,3])f.push(function(){return x;});globalThis.r=f.map(function(g){return g();}).join(',');", "1,2,3");
+    await expect("for-in object keys", "var o={a:1,b:2,c:3};var s='';for(var k in o)s+=k;globalThis.r=s;", "abc");
+    await expect("for-in object values", "var o={a:1,b:2};var s=0;for(var k in o)s+=o[k];globalThis.r=s;", 3);
+    await expect("for-in array indices", "var a=[10,20,30];var s='';for(var i in a)s+=i;globalThis.r=s;", "012");
+    await expect("for-in inherited enumerable", "function A(){}A.prototype.inh=1;var o=new A();o.own=2;var ks=[];for(var k in o)ks.push(k);globalThis.r=ks.sort().join(',');", "inh,own");
+    await expect("for-in break/continue", "var o={a:1,b:2,c:3,d:4};var s='';for(var k in o){if(k==='b')continue;if(k==='d')break;s+=k;}globalThis.r=s;", "ac");
+    await expect("for-in null safe", "var s=0;for(var k in null)s++;globalThis.r=s;", 0);
+    await expect("object rest basic", "var {a,...rest}={a:1,b:2,c:3};globalThis.r=a+'/'+JSON.stringify(rest);", "1/{\"b\":2,\"c\":3}");
+    await expect("object rest empty", "var {a,...rest}={a:1};globalThis.r=JSON.stringify(rest);", "{}");
+    await expect("object rest with rename", "var {a:x,...y}={a:1,b:2};globalThis.r=x+'/'+JSON.stringify(y);", "1/{\"b\":2}");
+    await expect("param object rest", "function f({a,...rest}){return a+'/'+JSON.stringify(rest);}globalThis.r=f({a:1,b:2,c:3});", "1/{\"b\":2,\"c\":3}");
+
     // ---- REGRESSION: catch-parameter scoping (must shadow, not overwrite) ----
     await expect("catch param shadows outer", "var t=5;try{throw 1;}catch(t){}globalThis.r=t;", 5);
     await expect("catch param value visible", "var e=9;try{throw 42;}catch(e){globalThis.r=e;}", 42);
@@ -253,9 +272,9 @@ async function main() {
     await expect("return arguments then index", "function c(){return arguments;}globalThis.r=c(7,8)[1];", 8);
 
     // ---- documented contract: still-unsupported syntax fails at compile time ----
-    await expectCompileError("unsupported: for-of", "for(var x of [1,2,3]){}", "ForOfStatement");
-    await expectCompileError("unsupported: for-in", "for(var k in {a:1}){}", "ForInStatement");
     await expectCompileError("unsupported: labeled statement", "outer:for(var i=0;i<1;i++){break outer;}", "LabeledStatement");
+    await expectCompileError("unsupported: class declaration", "class C{}", "ClassDeclaration");
+    await expectCompileError("unsupported: generator", "function* g(){yield 1;}", "");
 
     // ---- differential fuzzing (fixed seed => deterministic here / in CI) ----
     // Generates random programs over the supported grammar and checks the VM's

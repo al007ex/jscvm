@@ -91,9 +91,9 @@ most of the build time is the obfuscator pass, so `minify: false` is a lot faste
 **language, soon-ish**
 - [x] template literals
 - [x] optional chaining `?.`, nullish `??`, logical assignment `??=` / `&&=` / `||=`
-- [x] spread (calls, arrays, objects) — object *rest* (`{a, ...r}`) still pending (needs `for…in`)
+- [x] spread (calls, arrays, objects); object rest (`{a, ...r}`)
 - [x] rest & default params
-- [ ] `for…of` / `for…in`
+- [x] `for…of` / `for…in`
 
 **language, later**
 - [x] destructuring (declarations, params, assignment)

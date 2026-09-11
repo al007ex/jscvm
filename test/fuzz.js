@@ -64,6 +64,7 @@ const ENV = [
     "var box={val:4,get:function(){return this.val;},add:function(a,b){return a+b+this.val;}};",
     "var keys={k:\"val\"};var getKey=\"get\";",
     "var farr=[function(){return 100;},function(){return 200;}];var idx=1;",
+    "var fwd=function(){return Math.max.apply(null,arguments);};", // arguments-forwarding idiom
     "var m1=0,m2=1,m3=2;"
 ].join("");
 
@@ -100,7 +101,7 @@ function makeGen(rng) {
     }
 
     function call(d) {
-        switch ((rng() * 10) | 0) {
+        switch ((rng() * 13) | 0) {
             case 0: return "fn0()";
             case 1: return "(fn1(" + expr(d - 1) + "))";
             case 2: return "(add(" + expr(d - 1) + "," + expr(d - 1) + "))";
@@ -110,13 +111,16 @@ function makeGen(rng) {
             case 6: return "(box[getKey]())";               // computed method call via var
             case 7: return "(farr[" + pick(["0", "1", "idx"]) + "]())"; // arr[i]()
             case 8: return "(box.get?.())";                 // optional call
+            case 9: return "(add(..." + "[" + expr(d - 1) + "," + expr(d - 1) + "]))"; // spread call
+            case 10: return "(add.apply(null,[" + expr(d - 1) + "," + expr(d - 1) + "]))"; // apply
+            case 11: return "(fwd(" + expr(d - 1) + "," + expr(d - 1) + "))"; // arguments forwarding
             default: return "((" + expr(d - 1) + ")())";    // usually throws (parity check)
         }
     }
 
     function expr(d) {
         if (d <= 0) return leaf();
-        switch ((rng() * 12) | 0) {
+        switch ((rng() * 13) | 0) {
             case 0: return "(" + expr(d - 1) + pick(ARITH) + expr(d - 1) + ")";
             case 1: return "(" + expr(d - 1) + pick(BITWISE) + expr(d - 1) + ")";
             case 2: return "(" + expr(d - 1) + pick(COMPARE) + expr(d - 1) + ")";
@@ -128,6 +132,7 @@ function makeGen(rng) {
             case 8: return "(" + base(d) + "?." + pick(PROPS) + ")";
             case 9: return "(" + base(d) + "?.[" + expr(d - 1) + "])";
             case 10: return call(d);
+            case 11: return "([" + expr(d - 1) + ", ...arr])"; // array spread literal
             default: return leaf();
         }
     }

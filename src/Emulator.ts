@@ -521,6 +521,14 @@ let strings = [];
 // handler table). Patch either and decryption yields noise — no check to strip.
 var enc = decode(__program);
 var __SEED = (__seedBase ^ (__hash32(__program) ^ Math.imul(__funcs.length, 0x01000193))) | 0;
+// Memoise decrypted bytes. `enc[i] ^ __ks(i, __SEED)` is a pure function of `i`,
+// so each position is decrypted at most once even when re-read (hot loops and
+// repeated calls re-read the same bytecode constantly). This preserves the
+// security model — the payload ships encrypted, only bytes that actually execute
+// are ever decrypted, and the seed still derives from the payload so tampering
+// still decrypts to garbage — while removing the per-read keystream recompute.
+var __dec = new Uint8Array(enc.length);
+var __seen = new Uint8Array(enc.length);
 if (typeof Object !== "undefined" && typeof Object.freeze === "function") {
     Object.freeze(__funcs);
 }
@@ -592,9 +600,14 @@ class Block{
         this.scope = globalScope;
     }
 
-    // Decrypt a single byte at position `i` (position-keyed stream cipher).
+    // Decrypt a single byte at position `i` (position-keyed stream cipher),
+    // memoised so each position's keystream is computed at most once.
     _b(i){
-        return (enc[i] ^ __ks(i, __SEED)) & 0xff;
+        if (__seen[i]) return __dec[i];
+        var v = (enc[i] ^ __ks(i, __SEED)) & 0xff;
+        __dec[i] = v;
+        __seen[i] = 1;
+        return v;
     }
 
     readF64(){

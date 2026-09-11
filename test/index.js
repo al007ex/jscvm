@@ -219,13 +219,43 @@ async function main() {
     await expect("minify: getter", "var o={_v:3,get v(){return this._v*2;}};globalThis.r=o.v;", 6, { minify: true });
     await expect("minify: unicode round-trip", "globalThis.r='你好 😀';", "你好 😀", { minify: true });
 
-    // ---- documented contract: unsupported syntax fails at compile time ----
-    await expectCompileError("unsupported: spread in call", "Math.max(...[1,2,3]);", "SpreadElement");
-    await expectCompileError("unsupported: spread in array", "var a=[...[1,2]];", "SpreadElement");
+    // ---- default & rest params / destructuring / spread (lowered in Transpile) ----
+    await expect("default param", "function f(a,b=5){return a+b;}globalThis.r=f(1);", 6);
+    await expect("default param provided", "function f(a,b=5){return a+b;}globalThis.r=f(1,2);", 3);
+    await expect("rest param", "function g(a,...rest){return a+rest.reduce(function(x,y){return x+y;},0);}globalThis.r=g(1,2,3,4);", 10);
+    await expect("default + rest", "function f(a=1,...r){return a+r.length;}globalThis.r=f(undefined,9,9);", 3);
+    await expect("array destructuring", "var [a,b,c]=[1,2,3];globalThis.r=a+b+c;", 6);
+    await expect("array destructuring skip", "var [,b,,d]=[1,2,3,4];globalThis.r=b+d;", 6);
+    await expect("array destructuring swap", "var a=1,b=2;[a,b]=[b,a];globalThis.r=a+'-'+b;", "2-1");
+    await expect("object destructuring", "var {x,y}={x:2,y:3};globalThis.r=x*y;", 6);
+    await expect("object destructuring rename", "var {x:p,y:q}={x:5,y:2};globalThis.r=p-q;", 3);
+    await expect("nested destructuring", "var {a:{b}}={a:{b:7}};globalThis.r=b;", 7);
+    await expect("destructuring default", "var {p=9}={};globalThis.r=p;", 9);
+    await expect("param destructuring", "function f({x,y}){return x+y;}globalThis.r=f({x:4,y:5});", 9);
+    await expect("param destructuring default", "function f({x=2}={}){return x;}globalThis.r=f();", 2);
+    await expect("array spread literal", "globalThis.r=[0,...[1,2],3].join(',');", "0,1,2,3");
+    await expect("spread in call", "function s(a,b,c){return a+b+c;}globalThis.r=s(...[1,2,3]);", 6);
+    await expect("spread mixed with args", "function s(a,b,c,d){return a+b+c+d;}globalThis.r=s(1,...[2,3],4);", 10);
+    await expect("new with spread", "function P(a,b){this.s=a+b;}globalThis.r=new P(...[4,5]).s;", 9);
+    await expect("object spread", "var a={x:1};globalThis.r=({...a,y:2}).x+({...a,y:2}).y;", 3);
+    await expect("object spread override", "var a={x:1,y:1};globalThis.r=({...a,y:9}).y;", 9);
+    await expect("spread from string", "globalThis.r=[...'abc'].join('-');", "a-b-c");
+
+    // ---- REGRESSION: catch-parameter scoping (must shadow, not overwrite) ----
+    await expect("catch param shadows outer", "var t=5;try{throw 1;}catch(t){}globalThis.r=t;", 5);
+    await expect("catch param value visible", "var e=9;try{throw 42;}catch(e){globalThis.r=e;}", 42);
+    await expect("nested catch shadowing", "var e=1;try{try{throw 2;}catch(e){globalThis.inner=e;}}catch(e){}globalThis.r=globalThis.inner+'/'+e;", "2/1");
+
+    // ---- REGRESSION: bare `arguments` as a value (forwarding idioms) ----
+    await expect("arguments forwarded via apply", "function add(a,b,c){return a+b+c;}function f(){return add.apply(null,arguments);}globalThis.r=f(1,2,3);", 6);
+    await expect("Math.max.apply(null,arguments)", "function c(){return Math.max.apply(null,arguments);}globalThis.r=c(3,1,2);", 3);
+    await expect("push.apply(o,arguments)", "function c(){var o=[];o.push.apply(o,arguments);return o.length;}globalThis.r=c(1,2,3,4);", 4);
+    await expect("return arguments then index", "function c(){return arguments;}globalThis.r=c(7,8)[1];", 8);
+
+    // ---- documented contract: still-unsupported syntax fails at compile time ----
     await expectCompileError("unsupported: for-of", "for(var x of [1,2,3]){}", "ForOfStatement");
+    await expectCompileError("unsupported: for-in", "for(var k in {a:1}){}", "ForInStatement");
     await expectCompileError("unsupported: labeled statement", "outer:for(var i=0;i<1;i++){break outer;}", "LabeledStatement");
-    await expectCompileError("unsupported: array destructuring", "var [a,b]=[1,2];");
-    await expectCompileError("unsupported: default parameter", "function f(a,b=5){return a+b;}f(1);", "parameter type");
 
     // ---- differential fuzzing (fixed seed => deterministic here / in CI) ----
     // Generates random programs over the supported grammar and checks the VM's

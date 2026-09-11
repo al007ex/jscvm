@@ -15,6 +15,14 @@
 //                           (@babel/plugin-transform-nullish-coalescing-operator)
 //   - a &&= / ||= / ??= b -> short-circuit assignment
 //                           (@babel/plugin-transform-logical-assignment-operators)
+//   - destructuring       -> temp vars + member access
+//                           (@babel/plugin-transform-destructuring)
+//   - { ...a } / { a, ...r } -> Object helpers
+//                           (@babel/plugin-transform-object-rest-spread)
+//   - [ ...a ] / f(...a)  -> concat / apply / iterator helpers
+//                           (@babel/plugin-transform-spread)
+//   - default & rest params -> arguments-based prologue
+//                           (@babel/plugin-transform-parameters)
 //
 // It is intentionally structured so more lowering steps can be added later: add
 // a step to `transpileForVm` and, if it introduces runtime helpers, follow the
@@ -35,6 +43,10 @@ let _deps: {
     optionalChainingPlugin: any;
     nullishCoalescingPlugin: any;
     logicalAssignmentPlugin: any;
+    objectRestSpreadPlugin: any;
+    destructuringPlugin: any;
+    spreadPlugin: any;
+    parametersPlugin: any;
     helpersSource: string;
 } | null = null;
 
@@ -49,6 +61,10 @@ function deps() {
             optionalChainingPlugin: require("@babel/plugin-transform-optional-chaining"),
             nullishCoalescingPlugin: require("@babel/plugin-transform-nullish-coalescing-operator"),
             logicalAssignmentPlugin: require("@babel/plugin-transform-logical-assignment-operators"),
+            objectRestSpreadPlugin: require("@babel/plugin-transform-object-rest-spread"),
+            destructuringPlugin: require("@babel/plugin-transform-destructuring"),
+            spreadPlugin: require("@babel/plugin-transform-spread"),
+            parametersPlugin: require("@babel/plugin-transform-parameters"),
             helpersSource: require("babel-plugin-transform-async-to-promises/helpers-string").code
         };
     }
@@ -116,6 +132,26 @@ function tryTransform(code: string, plugins: any[]): string | null {
     }
 }
 
+// Babel plugin: give every catch parameter a unique name. The VM models one
+// flat function scope, so a catch parameter that shares a name with an outer
+// variable would alias it — writing the caught value into the outer binding
+// instead of shadowing it (`var t=5; try{...}catch(t){}; t` must stay 5). Babel's
+// scope-aware rename rewrites the binding and only its in-handler references.
+// This also fixes helper code injected by other transforms (e.g. the spread
+// plugin's `_construct`, which uses `var t` alongside `catch(t)`).
+function catchParamHygienePlugin(): any {
+    return {
+        visitor: {
+            CatchClause(path: any) {
+                const param = path.node.param;
+                if (param && param.type === "Identifier") {
+                    path.scope.rename(param.name);
+                }
+            }
+        }
+    };
+}
+
 // Resolve the helper imports emitted by the async plugin: inline the needed
 // helper definitions and drop the import statements.
 function resolveAsyncHelpers(code: string): string {
@@ -152,6 +188,20 @@ export function transpileForVm(code: string): string {
     const optionalNullishLowered = tryTransform(out, [deps().optionalChainingPlugin, deps().nullishCoalescingPlugin]);
     if (optionalNullishLowered !== null) out = optionalNullishLowered;
 
+    //    Object rest/spread, destructuring, array/call spread, and default/rest
+    //    parameters. Ordered high-level to low: object rest/spread first, then
+    //    destructuring (which consumes the simplified patterns), then array/call
+    //    spread, then parameter defaults/rest. Any iterator/object helpers these
+    //    emit are plain functions the VM runs; introduced temp vars are lowered
+    //    by the block-scoping pass below.
+    const destructuringLowered = tryTransform(out, [
+        deps().objectRestSpreadPlugin,
+        deps().destructuringPlugin,
+        deps().spreadPlugin,
+        deps().parametersPlugin
+    ]);
+    if (destructuringLowered !== null) out = destructuringLowered;
+
     // 2. Lower async/await to Promise chains. On failure, leave async untouched
     //    (the VM will then report a clear error on the remaining `await`), and
     //    still run block scoping below so let/const keeps working.
@@ -159,6 +209,12 @@ export function transpileForVm(code: string): string {
     if (asyncLowered !== null) {
         out = resolveAsyncHelpers(asyncLowered);
     }
+
+    // 2b. Give catch parameters unique names so they shadow (not overwrite) any
+    //     same-named outer variable in the VM's single flat scope. Runs after the
+    //     helper-injecting transforms above so their catch clauses are covered too.
+    const catchHygiene = tryTransform(out, [catchParamHygienePlugin()]);
+    if (catchHygiene !== null) out = catchHygiene;
 
     // 3. Lower let/const across everything, including any const/let introduced by
     //    the transforms above (temp vars) or in the inlined async helpers.

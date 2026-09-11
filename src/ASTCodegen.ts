@@ -695,6 +695,11 @@ export function GenerateNewExpression(node: NewExpression, scope: Scope){
 export function GenerateIdentifier(node: Identifier, scope: Scope){
 
     if(node.name === "arguments"){
+        // A bare `arguments` reference (not a member access) must still yield the
+        // arguments object — e.g. `fn.apply(this, arguments)`, `return arguments`.
+        // GetArgs handles regular vs arrow (lexical) functions, matching how
+        // member access on `arguments` is emitted elsewhere.
+        emitArguments(scope);
         return;
     }
 

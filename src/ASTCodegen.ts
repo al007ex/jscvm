@@ -47,6 +47,10 @@ export function emitDuplicate(scope: Scope){
     __writeI8(scope, Op.Duplicate);
 }
 
+export function emitPop(scope: Scope){
+    __writeI8(scope, Op.Pop);
+}
+
 export function emitInstanceOf(scope: Scope){
     __writeI8(scope, Op.InstanceOf);
 }
@@ -746,7 +750,22 @@ export function GenerateLogicalExpression(node: LogicalExpression, scope: Scope)
             falseLbl.setTarget();
             break;
         }
-        default: 
+        case "??": {
+            // a ?? b : keep a unless it is null/undefined, then evaluate b.
+            // `a == null` is true for exactly null and undefined (loose equality).
+            scope.generate(node.left);
+            emitDuplicate(scope);
+            emitNull(scope);
+            emitEqualTo(scope);                 // [a, (a == null)]
+            emitJumpIfFalse(scope);             // not nullish -> jump to keep, leaving [a]
+            let keepLbl = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+            keepLbl.setOrigin();
+            emitPop(scope);                     // nullish: drop a and use b
+            scope.generate(node.right);
+            keepLbl.setTarget();
+            break;
+        }
+        default:
             throw("Unknown logical expression");
     }
 }
@@ -994,9 +1013,102 @@ export function GenerateAssignmentExpression(node: AssignmentExpression, scope: 
             default:
                 throw("Invalid assignment expression type");
         }
+    }else if((node.operator as string) === "&&=" || (node.operator as string) === "||=" || (node.operator as string) === "??="){
+        generateLogicalAssign(node, scope);
     }else{
         throw("Unsupported assignment operator: " + node.operator);
     }
+}
+
+// Logical assignment (`&&=`, `||=`, `??=`). Short-circuits: the right-hand side
+// is evaluated (and the store performed) only when the operator says so, and the
+// target reference (object / computed key for a member target) is evaluated
+// exactly once. The result is the target's final value.
+//
+// Shape, for a duplicated current value `cur`:
+//   <load cur>; Duplicate; <skip-test>; JumpIfFalse end;
+//   Pop; <right>; <store>; end:
+// where <skip-test> leaves a boolean whose FALSE means "keep cur, skip assign".
+function generateLogicalAssign(node: AssignmentExpression, scope: Scope){
+    const op = node.operator as string;
+    const left = node.left;
+
+    function emitSkipTest(){
+        if(op === "||="){
+            emitNotSymbol(scope);       // keep when cur is truthy  (!cur === false)
+        }else if(op === "??="){
+            emitNull(scope);
+            emitEqualTo(scope);         // keep when cur is NOT nullish (cur == null -> false)
+        }
+        // "&&=": no extra test — JumpIfFalse already keeps cur when it is falsy.
+    }
+
+    if(left.type === "Identifier"){
+        let id = scope.getVarId(left.name);
+        let strId = id === -1 ? scope.getStringId(left.name) : -1;
+
+        if(id === -1){ emitString(scope, strId); emitGetGlobalVariableValue(scope); }
+        else { emitGetVariableValue(scope, id); }
+
+        emitDuplicate(scope);
+        emitSkipTest();
+        emitJumpIfFalse(scope);
+        let endLbl = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+        endLbl.setOrigin();
+
+        emitPop(scope);
+        scope.generate(node.right);
+        if(id === -1){ emitString(scope, strId); emitAssignValueToGlobal(scope); }
+        else { emitAssignValue(scope, id); }
+
+        endLbl.setTarget();
+        return;
+    }
+
+    if(left.type === "MemberExpression"){
+        // Evaluate the object (and a computed key) once, into scratch temps.
+        let tObj = scope.allocTemp();
+        scope.generate(left.object);
+        emitAssignValue(scope, tObj);
+        emitPop(scope);
+
+        const staticKey = left.property.type === "Identifier" && !left.computed;
+        let tProp = -1;
+        let propStrId = -1;
+        if(staticKey){
+            propStrId = scope.getStringId((left.property as Identifier).name);
+        }else{
+            tProp = scope.allocTemp();
+            scope.generate(left.property);
+            emitAssignValue(scope, tProp);
+            emitPop(scope);
+        }
+        const pushProp = () => staticKey ? emitString(scope, propStrId) : emitGetVariableValue(scope, tProp);
+
+        // load cur = obj[prop]
+        emitGetVariableValue(scope, tObj);
+        pushProp();
+        emitGetObjectProperty(scope);
+
+        emitDuplicate(scope);
+        emitSkipTest();
+        emitJumpIfFalse(scope);
+        let endLbl = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+        endLbl.setOrigin();
+
+        // assign path: obj[prop] = right  (SetObjectProperty wants [value, obj, prop])
+        emitPop(scope);
+        scope.generate(node.right);
+        emitGetVariableValue(scope, tObj);
+        pushProp();
+        emitSetObjectProperty(scope);
+
+        endLbl.setTarget();
+        scope.freeTemp(staticKey ? 1 : 2);
+        return;
+    }
+
+    throw("Invalid logical-assignment target: " + left.type);
 }
 
 export function GenerateVariableDeclarator(node: VariableDeclarator, scope: Scope){

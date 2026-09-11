@@ -33,6 +33,15 @@ export class Scope{
     public definition_set: Map<string, Definition> = new Map();
     public function_set: Map<string, FunctionDeclaration> = new Map();
 
+    // Codegen-only scratch locals, allocated on top of the real definitions and
+    // references. They let a feature evaluate a subexpression once and reuse it
+    // (member `??=`/`&&=`/`||=`, optional chaining, spread, ...) without leaking
+    // the VM stack. `maxTemps` is the high-water mark, folded into the block's
+    // definition count in build() so the VM allocates enough binding slots.
+    // Temps are anonymous and never inherited by child scopes.
+    public tempCursor = 0;
+    public maxTemps = 0;
+
     constructor(node: Node, parent: Scope | null = null){
         
         this.parent = parent;
@@ -86,6 +95,21 @@ export class Scope{
         if(this.definition_set.has(name)) return this.definition_set.get(name).localId;
         if(this.reference_set.has(name)) return this.reference_set.get(name).localId;
         return -1;
+    }
+
+    // Reserve a scratch local slot for codegen (id sits above all real
+    // definitions/references). Free it in LIFO order when done. Load/store use
+    // the ordinary GetVariableValue / AssignValue opcodes.
+    allocTemp(): number{
+        let base = this.definition_set.size + this.reference_set.size;
+        let id = base + this.tempCursor;
+        this.tempCursor++;
+        if(this.tempCursor > this.maxTemps) this.maxTemps = this.tempCursor;
+        return id;
+    }
+
+    freeTemp(count: number = 1): void{
+        this.tempCursor -= count;
     }
 
     varDeclaration(name: string){
@@ -347,7 +371,7 @@ export class Scope{
         forEveryParser(this, (scope: Scope)=>{
             let id = scope.id;
             let parentId = scope.parent ? scope.parent.id : 0;
-            let totalDefinitions = scope.definition_set.size + scope.reference_set.size;
+            let totalDefinitions = scope.definition_set.size + scope.reference_set.size + scope.maxTemps;
 
       //      console.log("************" + scope.id +"**************");
       //      console.log(scope.definition_set);

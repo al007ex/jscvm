@@ -190,6 +190,15 @@ async function main() {
     await expect("logical assign: ??= replaces nullish", "var a=null;a??=5;globalThis.r=a;", 5);
     await expect("logical assign: ??= keeps 0", "var a=0;a??=5;globalThis.r=a;", 0);
     await expect("logical assign: ??= on member (eval once)", "var o={n:null};o.n??=8;globalThis.r=o.n;", 8);
+    // native codegen specifics: short-circuit, single-eval of target, member/global/computed
+    await expect("nullish: ?? short-circuits rhs", "var n=0;function s(){n++;return 1;}var x=7??s();globalThis.r=n+'/'+x;", "0/7");
+    await expect("nullish: ?? keeps false", "globalThis.r=false??'d';", false);
+    await expect("logical assign: ||= on member", "var o={n:0};o.n||=8;globalThis.r=o.n;", 8);
+    await expect("logical assign: &&= on member", "var o={n:2};o.n&&=8;globalThis.r=o.n;", 8);
+    await expect("logical assign: computed member ??=", "var o={x:null};var k='x';o[k]??=9;globalThis.r=o.x;", 9);
+    await expect("logical assign: evaluates target once", "var n=0;function o(){n++;return {v:null};}o().v??=1;globalThis.r=n;", 1);
+    await expect("logical assign: ??= short-circuits rhs", "var n=0;function s(){n++;return 1;}var o={v:5};o.v??=s();globalThis.r=n+'/'+o.v;", "0/5");
+    await expect("logical assign: global ||=", "glob=0;glob||=7;globalThis.r=glob;", 7);
 
     // ---- REGRESSION: UTF-8 string literals (bug #1) ----
     await expect("unicode: latin-1 (é)", "globalThis.r='café';", "café");

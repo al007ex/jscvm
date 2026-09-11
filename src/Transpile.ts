@@ -11,10 +11,6 @@
 //   - async / await      -> Promise chains (babel-plugin-transform-async-to-promises)
 //   - a?.b / a?.() / a?.[b]  -> conditionals + temp vars
 //                           (@babel/plugin-transform-optional-chaining)
-//   - a ?? b             -> conditional on null/undefined
-//                           (@babel/plugin-transform-nullish-coalescing-operator)
-//   - a &&= / ||= / ??= b -> short-circuit assignment
-//                           (@babel/plugin-transform-logical-assignment-operators)
 //   - destructuring       -> temp vars + member access
 //                           (@babel/plugin-transform-destructuring)
 //   - { ...a } / { a, ...r } -> Object helpers
@@ -45,8 +41,6 @@ let _deps: {
     asyncPlugin: any;
     blockScopingPlugin: any;
     optionalChainingPlugin: any;
-    nullishCoalescingPlugin: any;
-    logicalAssignmentPlugin: any;
     objectRestSpreadPlugin: any;
     destructuringPlugin: any;
     spreadPlugin: any;
@@ -64,8 +58,6 @@ function deps() {
             asyncPlugin: require("babel-plugin-transform-async-to-promises"),
             blockScopingPlugin: require("@babel/plugin-transform-block-scoping"),
             optionalChainingPlugin: require("@babel/plugin-transform-optional-chaining"),
-            nullishCoalescingPlugin: require("@babel/plugin-transform-nullish-coalescing-operator"),
-            logicalAssignmentPlugin: require("@babel/plugin-transform-logical-assignment-operators"),
             objectRestSpreadPlugin: require("@babel/plugin-transform-object-rest-spread"),
             destructuringPlugin: require("@babel/plugin-transform-destructuring"),
             spreadPlugin: require("@babel/plugin-transform-spread"),
@@ -237,22 +229,17 @@ function resolveAsyncHelpers(code: string): string {
 export function transpileForVm(code: string): string {
     let out = code;
 
-    // 1. Lower modern operator syntax to the VM's supported subset, before the
+    // 1. Lower the modern syntax the VM doesn't yet compile natively, before the
     //    larger async / block-scoping transforms run over the result. Each step
     //    degrades gracefully: on failure the source is left untouched and the VM
     //    reports a clear compile error on the construct it can't handle.
     //
-    //    Logical assignment runs first because `a ??= b` lowers to `a ?? (a = b)`
-    //    — it emits `??`, which the nullish-coalescing step below then removes.
-    const logicalAssignLowered = tryTransform(out, [deps().logicalAssignmentPlugin]);
-    if (logicalAssignLowered !== null) out = logicalAssignLowered;
-
-    //    Optional chaining (`a?.b`, `a?.()`, `a?.[b]`) and nullish coalescing
-    //    (`a ?? b`) desugar to conditionals + temp vars the VM already supports.
-    //    Optional chaining is listed first so its output is in place before the
-    //    nullish visitor runs in the same pass.
-    const optionalNullishLowered = tryTransform(out, [deps().optionalChainingPlugin, deps().nullishCoalescingPlugin]);
-    if (optionalNullishLowered !== null) out = optionalNullishLowered;
+    //    Nullish coalescing (`??`) and logical assignment (`&&=`/`||=`/`??=`) are
+    //    now compiled natively (see GenerateLogicalExpression / the logical branch
+    //    of GenerateAssignmentExpression), so only optional chaining is lowered
+    //    here for now.
+    const optionalLowered = tryTransform(out, [deps().optionalChainingPlugin]);
+    if (optionalLowered !== null) out = optionalLowered;
 
     //    Object rest/spread, destructuring, array/call spread, and default/rest
     //    parameters. Ordered high-level to low: object rest/spread first, then

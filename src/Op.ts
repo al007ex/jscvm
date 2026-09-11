@@ -93,6 +93,7 @@ export const _Op: { [key: string]: number } = {
     DefineAccessor: id++,
     CompoundAssignProperty: id++,
     CreateArrow: id++,
+    Pop: id++,
 };
 export const OpRemap: { [key: string]: number } = {};
 export const Op: { [key: string]: number } = {};
@@ -209,4 +210,5 @@ export const OpcodeString: { [key: number]: string } = {
     [_Op.DefineAccessor] : "DefineAccessor",
     [_Op.CompoundAssignProperty] : "CompoundAssignProperty",
     [_Op.CreateArrow] : "CreateArrow",
+    [_Op.Pop] : "Pop",
 };

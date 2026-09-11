@@ -622,3 +622,9 @@ a[Op.GetArgs] = function(block){
 a[Op.JumpToStart] = function(block){
     block.ip = 0;
 }
+
+// Discard the top of the stack. Used by codegen to drop an intermediate value
+// (e.g. the short-circuited operand of `??` / logical assignment).
+a[Op.Pop] = function(block){
+    block._stack.pop();
+}

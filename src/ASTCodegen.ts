@@ -1133,6 +1133,128 @@ export function GenerateVariableDeclarator(node: VariableDeclarator, scope: Scop
     }
 }
 
+// Optional chaining: `a?.b`, `a?.()`, `a?.[e]`, and any non-optional links after
+// them. Acorn wraps the whole chain in one ChainExpression; the links inside are
+// ordinary Member/Call nodes carrying an `optional` flag. The entire chain
+// short-circuits to `undefined` the moment an optional link's receiver is
+// null/undefined. We generate the happy path inline and collect every optional
+// link's "receiver was nullish" jump into `guards`, which all land on a single
+// cleanup that replaces the receiver on the stack with `undefined`.
+//
+// Invariant: each guard fires when exactly one value (the receiver just tested)
+// is the live top of stack, so the cleanup's single Pop is always correct.
+
+// If the value on top of the stack is null/undefined, jump to the chain cleanup;
+// otherwise leave it in place and continue. (`v != null` is false only for null
+// and undefined.)
+function emitOptionalGuard(scope: Scope, guards: any[]){
+    emitDuplicate(scope);
+    emitNull(scope);
+    emitNotEqualTo(scope);        // [v, v != null]
+    emitJumpIfFalse(scope);       // nullish -> jump to cleanup, leaving [v]
+    let g = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+    g.setOrigin();
+    guards.push(g);
+}
+
+// Push a member's property key: computed keys evaluate the expression, static
+// keys use the name literally.
+function emitChainPropertyKey(node: any, scope: Scope){
+    if(node.computed) scope.generate(node.property);
+    else emitString(scope, scope.getStringId(node.property.name));
+}
+
+// Generate one node of a chain, leaving its value on the stack.
+function genOptionalChainValue(node: any, scope: Scope, guards: any[]){
+    if(node.type === "MemberExpression"){
+        genOptionalChainValue(node.object, scope, guards);   // [obj]
+        if(node.optional) emitOptionalGuard(scope, guards);  // short-circuit if obj nullish
+        emitChainPropertyKey(node, scope);                   // [obj, key]
+        emitGetObjectProperty(scope);                        // [obj[key]]
+        return;
+    }
+
+    if(node.type === "CallExpression"){
+        let callee = node.callee;
+        if(callee.type === "MemberExpression"){
+            // Method call: `this` is the member's object, evaluated once.
+            genOptionalChainValue(callee.object, scope, guards);  // [objVal]
+            if(callee.optional) emitOptionalGuard(scope, guards);
+            let tObj = scope.allocTemp();
+            emitAssignValue(scope, tObj);
+            emitPop(scope);                                   // tObj = objVal; stack []
+
+            if(node.optional){
+                // The call itself is optional: read the function once (so a getter
+                // runs once), guard it, then invoke the resolved value with the
+                // right `this` via `fn.apply(objVal, [args])`.
+                emitGetVariableValue(scope, tObj);
+                emitChainPropertyKey(callee, scope);
+                emitGetObjectProperty(scope);                 // [fn]
+                emitOptionalGuard(scope, guards);
+                let tFn = scope.allocTemp();
+                emitAssignValue(scope, tFn);
+                emitPop(scope);                               // tFn = fn; stack []
+
+                // Invoke as fn.apply(objVal, argsArray). ObjectPropertyCall pops
+                // obj (the receiver of .apply, i.e. fn) from the TOP, then the
+                // property key, then the call args — so push args, key, then fn.
+                emitGetVariableValue(scope, tObj);            // [objVal] (apply arg 0 = this)
+                node.arguments.forEach((arg: any) => scope.generate(arg));
+                emitMakeArray(scope, node.arguments.length);  // [objVal, argsArray] (apply arg 1)
+                emitString(scope, scope.getStringId("apply")); // [objVal, argsArray, "apply"]
+                emitGetVariableValue(scope, tFn);             // [objVal, argsArray, "apply", fn]
+                emitObjectPropertyCall(scope, 2);             // fn.apply(objVal, argsArray)
+                scope.freeTemp(1);                            // tFn
+            }else{
+                // Plain (non-optional) method call: ObjectPropertyCall reads the
+                // property once and binds `this` to the object. Stack order is
+                // [args..., key, obj] — obj is popped first (from the top).
+                node.arguments.forEach((arg: any) => scope.generate(arg));  // [args...]
+                emitChainPropertyKey(callee, scope);          // [args..., key]
+                emitGetVariableValue(scope, tObj);            // [args..., key, objVal]
+                emitObjectPropertyCall(scope, node.arguments.length);
+            }
+            scope.freeTemp(1);                                // tObj
+            return;
+        }
+
+        // Plain call (callee is not a member): `this` is the global object.
+        genOptionalChainValue(callee, scope, guards);         // [fnVal]
+        if(node.optional) emitOptionalGuard(scope, guards);
+        let tFn = scope.allocTemp();
+        emitAssignValue(scope, tFn);
+        emitPop(scope);                                       // tFn = fnVal; stack []
+        node.arguments.forEach((arg: any) => scope.generate(arg));  // [args...]
+        emitGetVariableValue(scope, tFn);                     // [args..., fn]
+        emitCall(scope, node.arguments.length);
+        scope.freeTemp(1);
+        return;
+    }
+
+    // Chain root (any other expression): generate normally.
+    scope.generate(node);
+}
+
+export function GenerateChainExpression(node: any, scope: Scope){
+    let guards: any[] = [];
+    genOptionalChainValue(node.expression, scope, guards);    // [value]
+
+    emitJMP(scope);
+    let endLbl = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+    endLbl.setOrigin();
+
+    // Cleanup: an optional link short-circuited. The nullish receiver is the lone
+    // value on the stack — drop it and yield undefined.
+    let cleanupOffset = scope.offset;
+    guards.forEach(g => { g.destination = cleanupOffset; });
+    emitPop(scope);
+    emitI8(scope, 0);
+    emitVoid(scope);                                          // undefined
+
+    endLbl.setTarget();
+}
+
 export function GenerateMemberExpression(node: MemberExpression, scope: Scope){
     let object = node.object;
     
@@ -1360,8 +1482,27 @@ export function GenerateVariableDeclaration(node: VariableDeclaration, scope: Sc
 
 export function GenerateUnaryExpression(node: UnaryExpression, scope: Scope){
     if(node.operator === "delete"){
-        let memExp = node.argument;
-        if(memExp.type === "MemberExpression"){
+        let memExp = node.argument as any;
+        if(memExp.type === "ChainExpression"){
+            // delete a?.b[.c…] — generate the final member's object with the chain's
+            // short-circuit, then delete the key. A short-circuit (nullish receiver)
+            // makes `delete` yield true, matching `delete undefined`.
+            let inner = memExp.expression;
+            if(inner.type !== "MemberExpression") throw("can only delete a member expression");
+            let guards: any[] = [];
+            genOptionalChainValue(inner.object, scope, guards);
+            if(inner.optional) emitOptionalGuard(scope, guards);
+            emitChainPropertyKey(inner, scope);
+            emitdelete(scope);
+            emitJMP(scope);
+            let endLbl = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+            endLbl.setOrigin();
+            let cleanup = scope.offset;
+            guards.forEach(g => { g.destination = cleanup; });
+            emitPop(scope);
+            emitBOOL(scope, true);
+            endLbl.setTarget();
+        }else if(memExp.type === "MemberExpression"){
             scope.generate(memExp.object);
             let property = memExp.property;
             if(property.type === "Identifier" && !memExp.computed){

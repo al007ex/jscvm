@@ -176,6 +176,15 @@ async function main() {
     await expect("optional chaining: computed member", "var o={x:{y:3}};var k='x';globalThis.r=o?.[k]?.y;", 3);
     await expect("optional chaining: short-circuits side effects",
         "var hits=0;function boom(){hits++;return 0;}var o=null;o?.a[boom()];globalThis.r=hits;", 0);
+    // native-codegen specifics: this-binding, single getter read, deep calls, delete
+    await expect("optional chaining: optional-call preserves this", "var o={n:3,get:function(){return this.n;}};globalThis.r=o.get?.();", 3);
+    await expect("optional chaining: method args + this", "var o={add:function(a,b){return a+b+this.base;},base:10};globalThis.r=o.add?.(2,3);", 15);
+    await expect("optional chaining: getter read once", "var n=0;var o={get f(){n++;return function(){return 1;};}};o.f?.();globalThis.r=n;", 1);
+    await expect("optional chaining: short-circuits call args", "var n=0;function boom(){n++;return 1;}var o=null;o?.f(boom());globalThis.r=n;", 0);
+    await expect("optional chaining: deep call chain", "var o={a:{b:{c:function(){return 'deep';}}}};globalThis.r=o?.a?.b?.c?.();", "deep");
+    await expect("optional chaining: with nullish fallback", "var o={x:null};globalThis.r=o?.x??'fb';", "fb");
+    await expect("delete optional member", "var o={a:1};var d=delete o?.a;globalThis.r=d+'/'+('a' in o);", "true/false");
+    await expect("delete optional nullish", "var o=null;globalThis.r=delete o?.a;", true);
 
     await expect("nullish: null falls through", "globalThis.r=null??'d';", "d");
     await expect("nullish: undefined falls through", "var u;globalThis.r=u??'d';", "d");

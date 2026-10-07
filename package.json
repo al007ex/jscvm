@@ -58,7 +58,6 @@
     "@babel/plugin-transform-destructuring": "^7.29.7",
     "@babel/plugin-transform-for-of": "^7.29.7",
     "@babel/plugin-transform-object-rest-spread": "^7.29.7",
-    "@babel/plugin-transform-optional-chaining": "^7.29.7",
     "@babel/plugin-transform-parameters": "^7.29.7",
     "@babel/plugin-transform-spread": "^7.29.8",
     "acorn": "^8.4.1",

@@ -9,8 +9,6 @@
 //   - let / const        -> function-scoped var with correct per-iteration
 //                           bindings and TDZ (@babel/plugin-transform-block-scoping)
 //   - async / await      -> Promise chains (babel-plugin-transform-async-to-promises)
-//   - a?.b / a?.() / a?.[b]  -> conditionals + temp vars
-//                           (@babel/plugin-transform-optional-chaining)
 //   - destructuring       -> temp vars + member access
 //                           (@babel/plugin-transform-destructuring)
 //   - { ...a } / { a, ...r } -> Object helpers
@@ -38,7 +36,6 @@ let _deps: {
     babel: any;
     asyncPlugin: any;
     blockScopingPlugin: any;
-    optionalChainingPlugin: any;
     objectRestSpreadPlugin: any;
     destructuringPlugin: any;
     spreadPlugin: any;
@@ -55,7 +52,6 @@ function deps() {
             babel: require("@babel/core"),
             asyncPlugin: require("babel-plugin-transform-async-to-promises"),
             blockScopingPlugin: require("@babel/plugin-transform-block-scoping"),
-            optionalChainingPlugin: require("@babel/plugin-transform-optional-chaining"),
             objectRestSpreadPlugin: require("@babel/plugin-transform-object-rest-spread"),
             destructuringPlugin: require("@babel/plugin-transform-destructuring"),
             spreadPlugin: require("@babel/plugin-transform-spread"),
@@ -172,13 +168,9 @@ export function transpileForVm(code: string): string {
     //    degrades gracefully: on failure the source is left untouched and the VM
     //    reports a clear compile error on the construct it can't handle.
     //
-    //    Nullish coalescing (`??`) and logical assignment (`&&=`/`||=`/`??=`) are
-    //    now compiled natively (see GenerateLogicalExpression / the logical branch
-    //    of GenerateAssignmentExpression), so only optional chaining is lowered
-    //    here for now.
-    const optionalLowered = tryTransform(out, [deps().optionalChainingPlugin]);
-    if (optionalLowered !== null) out = optionalLowered;
-
+    //    (Nullish `??`, logical assignment `&&=`/`||=`/`??=`, optional chaining
+    //    `?.`, and `for…in` are now compiled natively — see ASTCodegen.)
+    //
     //    Object rest/spread, destructuring, array/call spread, and default/rest
     //    parameters. Ordered high-level to low: object rest/spread first, then
     //    destructuring (which consumes the simplified patterns), then array/call

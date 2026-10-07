@@ -258,6 +258,16 @@ async function main() {
     await expect("object spread", "var a={x:1};globalThis.r=({...a,y:2}).x+({...a,y:2}).y;", 3);
     await expect("object spread override", "var a={x:1,y:1};globalThis.r=({...a,y:9}).y;", 9);
     await expect("spread from string", "globalThis.r=[...'abc'].join('-');", "a-b-c");
+    // native spread specifics: non-array iterables, this-binding, multiple spreads
+    await expect("array spread Set", "globalThis.r=[...new Set([1,2,2,3])].join(',');", "1,2,3");
+    await expect("array spread Map entries", "globalThis.r=JSON.stringify([...new Map([['a',1]])]);", "[[\"a\",1]]");
+    await expect("array spread multiple", "var a=[1],b=[2,3];globalThis.r=[...a,...b,4].join(',');", "1,2,3,4");
+    await expect("call spread multiple", "function s(a,b,c,d){return [a,b,c,d].join(',');}globalThis.r=s(...[1,2],...[3,4]);", "1,2,3,4");
+    await expect("call spread of Set", "function cnt(){return arguments.length;}globalThis.r=cnt(...new Set([1,2,3]));", 3);
+    await expect("method spread preserves this", "var o={base:10,add:function(a,b){return a+b+this.base;}};globalThis.r=o.add(...[2,3]);", 15);
+    await expect("computed method spread", "var o={m:function(a){return a+this.n;},n:5};var k='m';globalThis.r=o[k](...[10]);", 15);
+    await expect("new spread + prototype", "function P(a,b){this.v=a*b;}P.prototype.get=function(){return this.v;};globalThis.r=new P(...[3,4]).get();", 12);
+    await expect("spread call inside optional chain", "function add(a,b){return a+b;}globalThis.r=(add(...[1,2]))?.toString?.();", "3");
 
     // ---- for…of / for…in / object rest ----
     await expect("for-of array", "var s=0;for(var x of [1,2,3])s+=x;globalThis.r=s;", 6);

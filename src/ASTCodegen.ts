@@ -55,6 +55,49 @@ export function emitForInKeys(scope: Scope){
     __writeI8(scope, Op.ForInKeys);
 }
 
+export function emitNewArray(scope: Scope){
+    __writeI8(scope, Op.NewArray);
+}
+export function emitArrayAppend(scope: Scope){
+    __writeI8(scope, Op.ArrayAppend);
+}
+export function emitArrayAppendSpread(scope: Scope){
+    __writeI8(scope, Op.ArrayAppendSpread);
+}
+export function emitApplyCall(scope: Scope){
+    __writeI8(scope, Op.ApplyCall);
+}
+export function emitConstructSpread(scope: Scope){
+    __writeI8(scope, Op.ConstructSpread);
+}
+
+// Does this element/argument list contain a spread (`...x`)?
+function hasSpread(list: any[]): boolean {
+    for(let i = 0; i < list.length; i++){
+        if(list[i] && list[i].type === "SpreadElement") return true;
+    }
+    return false;
+}
+
+// Build an array on the stack from `elements`, flattening any SpreadElement by
+// iterating it (host iteration = full iterator protocol). Array holes become
+// `undefined` (consistent with GenerateArrayExpression's dense handling).
+function emitSpreadArray(elements: any[], scope: Scope){
+    emitNewArray(scope);                       // [arr]
+    elements.forEach(el => {
+        if(el === null){
+            emitI8(scope, 0); emitVoid(scope);
+            emitArrayAppend(scope);
+        }else if(el.type === "SpreadElement"){
+            scope.generate(el.argument);
+            emitArrayAppendSpread(scope);
+        }else{
+            scope.generate(el);
+            emitArrayAppend(scope);
+        }
+    });
+}
+
 export function emitInstanceOf(scope: Scope){
     __writeI8(scope, Op.InstanceOf);
 }
@@ -535,8 +578,42 @@ export function GenerateSequenceExpression(node: SequenceExpression, scope: Scop
     node.expressions.forEach(child => scope.generate(child));
 }
 
+// f(...args) / o.m(...args): build the argument array (flattening spreads) and
+// invoke via apply, preserving `this` (the receiver for a method call, else the
+// global object).
+function generateSpreadCall(node: CallExpression, scope: Scope){
+    let callee = node.callee as any;
+    if(callee.type === "MemberExpression"){
+        let tObj = scope.allocTemp();
+        scope.generate(callee.object);
+        emitAssignValue(scope, tObj);
+        emitPop(scope);                                   // tObj = receiver
+
+        emitGetVariableValue(scope, tObj);                // [obj]
+        if(callee.property.type === "Identifier" && !callee.computed){
+            emitString(scope, scope.getStringId(callee.property.name));
+        }else{
+            scope.generate(callee.property);
+        }
+        emitGetObjectProperty(scope);                     // [fn]
+        emitGetVariableValue(scope, tObj);                // [fn, this]
+        emitSpreadArray(node.arguments as any[], scope);  // [fn, this, argsArray]
+        emitApplyCall(scope);
+        scope.freeTemp(1);
+    }else{
+        scope.generate(callee);                           // [fn]
+        emitGlobal(scope);                                // [fn, global]
+        emitSpreadArray(node.arguments as any[], scope);  // [fn, global, argsArray]
+        emitApplyCall(scope);
+    }
+}
+
 export function GenerateCallExpression(node: CallExpression, scope: Scope){
     let callee = node.callee;
+    if(hasSpread(node.arguments as any[])){
+        generateSpreadCall(node, scope);
+        return;
+    }
     node.arguments.forEach(child => scope.generate(child));
     switch(callee.type){
         case "Identifier": {
@@ -695,6 +772,13 @@ export function GenerateDebuggerStatement(node: DebuggerStatement, scope: Scope)
 }
 
 export function GenerateNewExpression(node: NewExpression, scope: Scope){
+    if(hasSpread(node.arguments as any[])){
+        // new F(...args): build the argument array and construct with it.
+        scope.generate(node.callee);                      // [fn]
+        emitSpreadArray(node.arguments as any[], scope);  // [fn, argsArray]
+        emitConstructSpread(scope);
+        return;
+    }
     scope.generate(node.callee);
     node.arguments.forEach(child => scope.generate(child));
     emitNewExpression(scope, node.arguments.length);
@@ -1177,45 +1261,29 @@ function genOptionalChainValue(node: any, scope: Scope, guards: any[]){
     if(node.type === "CallExpression"){
         let callee = node.callee;
         if(callee.type === "MemberExpression"){
-            // Method call: `this` is the member's object, evaluated once.
+            // Method call: the receiver is evaluated once (temp), the function
+            // obj[key] read once (so a getter runs once), then invoked via
+            // fn.apply(receiver, args). This uniformly covers optional members,
+            // optional calls, and spread arguments.
             genOptionalChainValue(callee.object, scope, guards);  // [objVal]
             if(callee.optional) emitOptionalGuard(scope, guards);
             let tObj = scope.allocTemp();
             emitAssignValue(scope, tObj);
-            emitPop(scope);                                   // tObj = objVal; stack []
+            emitPop(scope);                                   // tObj = objVal
 
-            if(node.optional){
-                // The call itself is optional: read the function once (so a getter
-                // runs once), guard it, then invoke the resolved value with the
-                // right `this` via `fn.apply(objVal, [args])`.
-                emitGetVariableValue(scope, tObj);
-                emitChainPropertyKey(callee, scope);
-                emitGetObjectProperty(scope);                 // [fn]
-                emitOptionalGuard(scope, guards);
-                let tFn = scope.allocTemp();
-                emitAssignValue(scope, tFn);
-                emitPop(scope);                               // tFn = fn; stack []
+            emitGetVariableValue(scope, tObj);
+            emitChainPropertyKey(callee, scope);
+            emitGetObjectProperty(scope);                     // [fn]
+            if(node.optional) emitOptionalGuard(scope, guards);
+            let tFn = scope.allocTemp();
+            emitAssignValue(scope, tFn);
+            emitPop(scope);                                   // tFn = fn
 
-                // Invoke as fn.apply(objVal, argsArray). ObjectPropertyCall pops
-                // obj (the receiver of .apply, i.e. fn) from the TOP, then the
-                // property key, then the call args — so push args, key, then fn.
-                emitGetVariableValue(scope, tObj);            // [objVal] (apply arg 0 = this)
-                node.arguments.forEach((arg: any) => scope.generate(arg));
-                emitMakeArray(scope, node.arguments.length);  // [objVal, argsArray] (apply arg 1)
-                emitString(scope, scope.getStringId("apply")); // [objVal, argsArray, "apply"]
-                emitGetVariableValue(scope, tFn);             // [objVal, argsArray, "apply", fn]
-                emitObjectPropertyCall(scope, 2);             // fn.apply(objVal, argsArray)
-                scope.freeTemp(1);                            // tFn
-            }else{
-                // Plain (non-optional) method call: ObjectPropertyCall reads the
-                // property once and binds `this` to the object. Stack order is
-                // [args..., key, obj] — obj is popped first (from the top).
-                node.arguments.forEach((arg: any) => scope.generate(arg));  // [args...]
-                emitChainPropertyKey(callee, scope);          // [args..., key]
-                emitGetVariableValue(scope, tObj);            // [args..., key, objVal]
-                emitObjectPropertyCall(scope, node.arguments.length);
-            }
-            scope.freeTemp(1);                                // tObj
+            emitGetVariableValue(scope, tFn);                 // [fn]
+            emitGetVariableValue(scope, tObj);                // [fn, this]
+            emitSpreadArray(node.arguments as any[], scope);  // [fn, this, argsArray]
+            emitApplyCall(scope);
+            scope.freeTemp(2);                                // tFn, tObj
             return;
         }
 
@@ -1224,10 +1292,11 @@ function genOptionalChainValue(node: any, scope: Scope, guards: any[]){
         if(node.optional) emitOptionalGuard(scope, guards);
         let tFn = scope.allocTemp();
         emitAssignValue(scope, tFn);
-        emitPop(scope);                                       // tFn = fnVal; stack []
-        node.arguments.forEach((arg: any) => scope.generate(arg));  // [args...]
-        emitGetVariableValue(scope, tFn);                     // [args..., fn]
-        emitCall(scope, node.arguments.length);
+        emitPop(scope);                                       // tFn = fnVal
+        emitGetVariableValue(scope, tFn);                     // [fn]
+        emitGlobal(scope);                                    // [fn, global]
+        emitSpreadArray(node.arguments as any[], scope);      // [fn, global, argsArray]
+        emitApplyCall(scope);
         scope.freeTemp(1);
         return;
     }
@@ -1317,6 +1386,11 @@ export function GenerateProperty(node: Property, scope: Scope){
 }
 
 export function GenerateArrayExpression(node: ArrayExpression, scope: Scope){
+    if(hasSpread(node.elements as any[])){
+        // [a, ...b, c] — build incrementally, flattening spreads.
+        emitSpreadArray(node.elements as any[], scope);
+        return;
+    }
     node.elements.forEach(child => {
         if(child === null){
             // Array elision, e.g. [1, , 3]. The stack machine builds a dense

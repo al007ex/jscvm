@@ -95,6 +95,11 @@ export const _Op: { [key: string]: number } = {
     CreateArrow: id++,
     Pop: id++,
     ForInKeys: id++,
+    NewArray: id++,
+    ArrayAppend: id++,
+    ArrayAppendSpread: id++,
+    ApplyCall: id++,
+    ConstructSpread: id++,
 };
 export const OpRemap: { [key: string]: number } = {};
 export const Op: { [key: string]: number } = {};
@@ -213,4 +218,9 @@ export const OpcodeString: { [key: number]: string } = {
     [_Op.CreateArrow] : "CreateArrow",
     [_Op.Pop] : "Pop",
     [_Op.ForInKeys] : "ForInKeys",
+    [_Op.NewArray] : "NewArray",
+    [_Op.ArrayAppend] : "ArrayAppend",
+    [_Op.ArrayAppendSpread] : "ArrayAppendSpread",
+    [_Op.ApplyCall] : "ApplyCall",
+    [_Op.ConstructSpread] : "ConstructSpread",
 };

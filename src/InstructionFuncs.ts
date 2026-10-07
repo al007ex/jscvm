@@ -642,3 +642,46 @@ a[Op.ForInKeys] = function(block){
     }
     block._stack.push(keys);
 }
+
+// Spread support. The emulator is itself JS, so spreading uses host iteration
+// (any iterable: arrays, strings, Set/Map, generators, ...).
+a[Op.NewArray] = function(block){
+    block._stack.push([]);
+}
+
+// [arr, value] -> arr with value appended.
+a[Op.ArrayAppend] = function(block){
+    let v = block._stack.pop();
+    let arr = block._stack.pop();
+    arr.push(v);
+    block._stack.push(arr);
+}
+
+// [arr, iterable] -> arr with every element of the iterable appended.
+// Array.from (a runtime call) handles any iterable — arrays, strings, Set/Map,
+// generators. We avoid a literal `for…of` here because this handler's source is
+// emitted at es5, where tsc would downlevel `for…of` to array-index iteration
+// (broken for non-array iterables like Set/Map).
+a[Op.ArrayAppendSpread] = function(block){
+    let it = block._stack.pop();
+    let arr = block._stack.pop();
+    let items = Array.from(it);
+    for(let i = 0; i < items.length; i++) arr.push(items[i]);
+    block._stack.push(arr);
+}
+
+// [fn, thisArg, argsArray] -> fn.apply(thisArg, argsArray). Uses the captured
+// native apply so a monkeypatched Function.prototype.apply can't intercept it.
+a[Op.ApplyCall] = function(block){
+    let args = block._stack.pop();
+    let thisArg = block._stack.pop();
+    let fn = ensureCallable(block._stack.pop());
+    block._stack.push(__ap.call(fn, thisArg, args));
+}
+
+// [fn, argsArray] -> new fn(...argsArray).
+a[Op.ConstructSpread] = function(block){
+    let args = block._stack.pop();
+    let fn = block._stack.pop();
+    block._stack.push(construct(fn, args));
+}

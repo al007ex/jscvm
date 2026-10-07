@@ -13,8 +13,6 @@
 //                           (@babel/plugin-transform-destructuring)
 //   - { ...a } / { a, ...r } -> Object helpers
 //                           (@babel/plugin-transform-object-rest-spread)
-//   - [ ...a ] / f(...a)  -> concat / apply / iterator helpers
-//                           (@babel/plugin-transform-spread)
 //   - default & rest params -> arguments-based prologue
 //                           (@babel/plugin-transform-parameters)
 //   - for…of              -> iterator-protocol / indexed loop
@@ -38,7 +36,6 @@ let _deps: {
     blockScopingPlugin: any;
     objectRestSpreadPlugin: any;
     destructuringPlugin: any;
-    spreadPlugin: any;
     parametersPlugin: any;
     forOfPlugin: any;
     helpersSource: string;
@@ -54,7 +51,6 @@ function deps() {
             blockScopingPlugin: require("@babel/plugin-transform-block-scoping"),
             objectRestSpreadPlugin: require("@babel/plugin-transform-object-rest-spread"),
             destructuringPlugin: require("@babel/plugin-transform-destructuring"),
-            spreadPlugin: require("@babel/plugin-transform-spread"),
             parametersPlugin: require("@babel/plugin-transform-parameters"),
             forOfPlugin: require("@babel/plugin-transform-for-of"),
             helpersSource: require("babel-plugin-transform-async-to-promises/helpers-string").code
@@ -180,7 +176,6 @@ export function transpileForVm(code: string): string {
     const destructuringLowered = tryTransform(out, [
         deps().objectRestSpreadPlugin,
         deps().destructuringPlugin,
-        deps().spreadPlugin,
         deps().parametersPlugin,
         deps().forOfPlugin
     ]);

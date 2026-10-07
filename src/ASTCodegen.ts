@@ -674,20 +674,7 @@ export function GenerateConditionalExpression(node: ConditionalExpression, scope
 export function GenerateFunctionExpression(node: FunctionExpression, scope: Scope){
     
     if(scope.node === node){
-        let argumentId = 0;
-        node.params.forEach(child => {
-            if(child.type === "Identifier"){
-                //redeclare the variable under the new scope
-                let varid = scope.getVarId(child.name);
-                emitGetArguments(scope, argumentId);
-                emitAssignValue(scope, varid);
-                argumentId++;
-
-            }else{
-                throw("Unknown paramater type");
-                scope.generate(child)
-            }
-        });
+        emitParams(node.params as any[], scope);
         scope.generate(node.body);
     }else{
         let child = scope.makeChild(node);
@@ -704,19 +691,7 @@ export function GenerateArrowFunctionExpression(node: any, scope: Scope){
         // exactly like a regular function. `this` and `arguments` are lexical and
         // resolved by the VM (CreateArrow captures them, GetArgs/This read them),
         // so there is nothing to emit for them here.
-        let argumentId = 0;
-        node.params.forEach((child: any) => {
-            if(child.type === "Identifier"){
-                let varid = scope.getVarId(child.name);
-                emitGetArguments(scope, argumentId);
-                emitAssignValue(scope, varid);
-                argumentId++;
-            }else{
-                // Default/rest/destructuring params are not supported yet; fail
-                // loudly rather than miscompile.
-                throw("Unsupported arrow function parameter type: " + child.type);
-            }
-        });
+        emitParams(node.params as any[], scope);
 
         if(node.body.type === "BlockStatement"){
             scope.generate(node.body);
@@ -1034,6 +1009,15 @@ export function GenerateSwitchStatement(node: SwitchStatement, scope: Scope){
 export function GenerateAssignmentExpression(node: AssignmentExpression, scope: Scope){
     let left = node.left;
     if(node.operator === "="){
+        if(left.type === "ArrayPattern" || left.type === "ObjectPattern"){
+            // Destructuring assignment. The expression's value is the right-hand
+            // side, so duplicate it: one copy is consumed by the binding, the
+            // other is left on the stack as the result.
+            scope.generate(node.right);         // [rhs]
+            emitDuplicate(scope);               // [rhs, rhs]
+            emitDestructure(left, scope, false); // consumes one copy, leaves [rhs]
+            return;
+        }
         scope.generate(node.right);
         switch(left.type){
             case "Identifier":
@@ -1199,6 +1183,207 @@ function generateLogicalAssign(node: AssignmentExpression, scope: Scope){
     throw("Invalid logical-assignment target: " + left.type);
 }
 
+// ---------------------------------------------------------------------------
+// Destructuring (array / object patterns) and parameter binding.
+//
+// Compiled natively rather than lowered by Babel. The pipeline still runs
+// @babel/plugin-transform-object-rest-spread ahead of codegen, which strips
+// object rest (`{a, ...r}`) out of every pattern — in declarations, assignment
+// targets and parameters alike — leaving only non-rest object patterns here. So
+// the patterns reaching codegen are: ArrayPattern (holes, defaults, a trailing
+// array rest), ObjectPattern (renames, computed keys, defaults) and
+// AssignmentPattern (defaults), nested arbitrarily.
+//
+// Array patterns bind through a fresh array built from the source with the
+// spread append (`Array.from` semantics), so any finite iterable — arrays,
+// strings, Sets, Maps, generators, arguments — destructures correctly.
+// ---------------------------------------------------------------------------
+
+// Collect every identifier name bound by `pattern` (used by the scope pre-pass to
+// reserve slots). MemberExpression targets in assignment destructuring bind no
+// new name and are ignored.
+export function collectPatternNames(pattern: any, out: string[]){
+    if(!pattern) return;
+    switch(pattern.type){
+        case "Identifier": out.push(pattern.name); break;
+        case "AssignmentPattern": collectPatternNames(pattern.left, out); break;
+        case "RestElement": collectPatternNames(pattern.argument, out); break;
+        case "ArrayPattern":
+            pattern.elements.forEach((el: any) => collectPatternNames(el, out));
+            break;
+        case "ObjectPattern":
+            pattern.properties.forEach((p: any) => {
+                if(p.type === "RestElement") collectPatternNames(p.argument, out);
+                else collectPatternNames(p.value, out);
+            });
+            break;
+    }
+}
+
+// Push `undefined` (`void 0`).
+function emitUndefined(scope: Scope){
+    emitI8(scope, 0);
+    emitVoid(scope);
+}
+
+// Store the value on top of the stack into a simple target — an Identifier (local
+// or global) or, in assignment destructuring, a MemberExpression — consuming it.
+// The store opcodes leave the stored value behind, so a Pop rebalances the stack.
+function emitStoreLeaf(target: any, scope: Scope, declare: boolean){
+    if(target.type === "Identifier"){
+        let id = scope.getVarId(target.name);
+        if(id === -1){
+            // Undeclared name -> global. (declare=true names are always registered
+            // as locals by the pre-pass, so -1 only happens for assignment targets.)
+            emitString(scope, scope.getStringId(target.name));
+            emitAssignValueToGlobal(scope);
+        }else{
+            emitAssignValue(scope, id);
+        }
+    }else if(target.type === "MemberExpression"){
+        // SetObjectProperty wants [value, obj, key]; the value is already on the
+        // stack from the caller, so push obj then key on top of it.
+        scope.generate(target.object);
+        if(!target.computed && target.property.type === "Identifier"){
+            emitString(scope, scope.getStringId(target.property.name));
+        }else{
+            scope.generate(target.property);
+        }
+        emitSetObjectProperty(scope);
+    }else{
+        throw("Invalid destructuring assignment target: " + target.type);
+    }
+    emitPop(scope); // drop the value the store opcode pushed back
+}
+
+// Bind `target` to the value on top of the stack, consuming it (net effect:
+// removes that one value). `declare` selects local binding (let/const/var/param)
+// vs assignment-to-existing-target semantics for leaf identifiers.
+function emitDestructure(target: any, scope: Scope, declare: boolean){
+    switch(target.type){
+        case "Identifier":
+        case "MemberExpression":
+            emitStoreLeaf(target, scope, declare);
+            return;
+        case "AssignmentPattern":
+            emitDefaulted(target, scope, declare);
+            return;
+        case "ArrayPattern":
+            emitArrayPattern(target, scope, declare);
+            return;
+        case "ObjectPattern":
+            emitObjectPattern(target, scope, declare);
+            return;
+        default:
+            throw("Unsupported destructuring target: " + target.type);
+    }
+}
+
+// `target = default`: if the value on top of the stack is `undefined`, replace it
+// with the default expression; then bind the inner pattern.
+function emitDefaulted(node: any, scope: Scope, declare: boolean){
+    // stack: [v]
+    emitDuplicate(scope);                 // [v, v]
+    emitUndefined(scope);                 // [v, v, undefined]
+    emitEqualToStrict(scope);             // [v, v === undefined]
+    emitJumpIfFalse(scope);               // defined -> skip default, keep [v]
+    let defined = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+    defined.setOrigin();
+    emitPop(scope);                       // v is undefined: drop it
+    scope.generate(node.right);           // [default]
+    defined.setTarget();                  // [valueToBind]
+    emitDestructure(node.left, scope, declare);
+}
+
+// Convert the iterable on top of the stack into a fresh array (`Array.from` via
+// the spread append) and store it in slot `tArr`, consuming the source.
+function emitIterableToTemp(scope: Scope, tArr: number){
+    let tSrc = scope.allocTemp();
+    emitAssignValue(scope, tSrc); emitPop(scope);   // stash source, []
+    emitNewArray(scope);                            // [arr]
+    emitGetVariableValue(scope, tSrc);              // [arr, src]
+    emitArrayAppendSpread(scope);                   // [Array.from(src)]
+    emitAssignValue(scope, tArr); emitPop(scope);   // store in tArr, []
+    scope.freeTemp(1);                              // release tSrc
+}
+
+// `[a, , b, ...rest]`: materialise the source as an array, then bind each element
+// by index (skipping holes) and the trailing rest via slice.
+function emitArrayPattern(node: any, scope: Scope, declare: boolean){
+    let tArr = scope.allocTemp();
+    emitIterableToTemp(scope, tArr);
+    let elements = node.elements;
+    for(let i = 0; i < elements.length; i++){
+        let el = elements[i];
+        if(el === null) continue;                        // hole
+        if(el.type === "RestElement"){
+            // rest = arr.slice(i); ObjectPropertyCall wants [args..., key, obj].
+            loadNumber(scope, i);                            // [i]
+            emitString(scope, scope.getStringId("slice"));   // [i, "slice"]
+            emitGetVariableValue(scope, tArr);               // [i, "slice", arr]
+            emitObjectPropertyCall(scope, 1);                // [rest]
+            emitDestructure(el.argument, scope, declare);
+            break;                                           // rest is always last
+        }
+        emitGetVariableValue(scope, tArr);          // [arr]
+        loadNumber(scope, i);                        // [arr, i]
+        emitGetObjectProperty(scope);               // [arr[i]]
+        emitDestructure(el, scope, declare);
+    }
+    scope.freeTemp(1);                              // release tArr
+}
+
+// `{a, b: c, [k]: d, e = 1}`: read each property off the source and bind it.
+// Object rest is removed upstream, so none reaches here.
+function emitObjectPattern(node: any, scope: Scope, declare: boolean){
+    let tSrc = scope.allocTemp();
+    emitAssignValue(scope, tSrc); emitPop(scope);   // stash source, []
+    node.properties.forEach((prop: any) => {
+        if(prop.type === "RestElement"){
+            throw("object rest in a pattern should be lowered before codegen");
+        }
+        emitGetVariableValue(scope, tSrc);          // [src]
+        if(!prop.computed && prop.key.type === "Identifier"){
+            emitString(scope, scope.getStringId(prop.key.name));  // [src, "key"]
+        }else{
+            scope.generate(prop.key);               // [src, keyVal] (computed / literal key)
+        }
+        emitGetObjectProperty(scope);               // [src[key]]
+        emitDestructure(prop.value, scope, declare);
+    });
+    scope.freeTemp(1);                              // release tSrc
+}
+
+// Bind one parameter at position `index` from the call arguments into `scope`.
+// Handles plain identifiers, defaults, destructuring patterns and a trailing rest.
+function emitParam(param: any, scope: Scope, index: number){
+    if(param.type === "RestElement"){
+        // ...rest: the remaining arguments as a fresh array. Build an array from
+        // `arguments` (spread), stash it, then slice(index).
+        let tArgs = scope.allocTemp();
+        emitNewArray(scope);                            // [arr]
+        emitArguments(scope);                           // [arr, arguments]
+        emitArrayAppendSpread(scope);                   // [Array.from(arguments)]
+        emitAssignValue(scope, tArgs); emitPop(scope);  // stash, []
+        loadNumber(scope, index);                        // [index]
+        emitString(scope, scope.getStringId("slice"));   // [index, "slice"]
+        emitGetVariableValue(scope, tArgs);              // [index, "slice", argsArr]
+        emitObjectPropertyCall(scope, 1);                // [rest]
+        scope.freeTemp(1);                              // release tArgs
+        emitDestructure(param.argument, scope, true);
+        return;
+    }
+    emitGetArguments(scope, index);   // [arguments[index]]
+    emitDestructure(param, scope, true);
+}
+
+// Bind a function/arrow parameter list into `scope` from the call arguments.
+export function emitParams(params: any[], scope: Scope){
+    for(let i = 0; i < params.length; i++){
+        emitParam(params[i], scope, i);
+    }
+}
+
 export function GenerateVariableDeclarator(node: VariableDeclarator, scope: Scope){
     // `var x;` with no initializer must leave the binding at its current value
     // (undefined on first entry) — NOT assign whatever happens to be on the stack.
@@ -1212,6 +1397,13 @@ export function GenerateVariableDeclarator(node: VariableDeclarator, scope: Scop
             emitAssignValue(scope, id);
             break;
         }
+        case "ArrayPattern":
+        case "ObjectPattern":
+            // Destructuring declaration: bind the pattern from the initializer,
+            // which is on the stack. (A destructuring declarator always has an
+            // initializer — `let [a];` is a SyntaxError — so node.init is present.)
+            emitDestructure(node.id, scope, true);
+            break;
         default:
             throw("Unknown init varaible");
     }
@@ -1832,23 +2024,7 @@ export function GenerateByteCode(node: Node, scope: Scope){
         emitCreateFunction(scope, child_scope.id);
         emitAssignValue(scope, variableId);
 
-
-        let argumentId = 0;
-        fn.params.forEach(child => {
-            if(child.type === "Identifier"){
-                //redeclare the variable under the new scope
-                //console.log("entering");
-                let varid = child_scope.getVarId(child.name);
-                //console.log("Exciting", varid, child.name);
-                emitGetArguments(child_scope, argumentId);
-                emitAssignValue(child_scope, varid);
-                argumentId++;
-
-            }else{
-                throw("Unknown paramater type");
-                scope.generate(child)
-            }
-        });
+        emitParams(fn.params as any[], child_scope);
 
         let argumentVariableId = child_scope.getVarId("arguments");
         emitArguments(child_scope);

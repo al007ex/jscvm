@@ -77,11 +77,21 @@ const LOGICAL = ["&&", "||", "??"];
 const UNARY = ["!", "-", "+", "~", "typeof ", "void "];
 const ASSIGN_OPS = ["=", "+=", "-=", "*=", "%=", "&&=", "||=", "??=", "&=", "|=", "^="];
 
+// Iterable / object sources for destructuring (all present in ENV), covering
+// arrays, strings (iterable), an array of functions, and nested objects.
+const ARR_SRC = ["arr", "[1,2,3]", "[n1,n2,n3]", "\"xy\"", "farr", "[]"];
+const OBJ_SRC = ["obj", "{x:1,y:2}", "keys", "box", "obj.z", "{}"];
+
 function makeGen(rng) {
     const pick = arr => arr[(rng() * arr.length) | 0];
     const chance = p => rng() < p;
     const intLit = () => String(((rng() * 11) | 0) - 5);
     const strLit = () => JSON.stringify(pick(["", "a", "ab", "hi", "xy", "z", "val"]));
+
+    // Unique fresh binding names so multiple destructuring statements in one
+    // program never collide (a redeclaration would just throw on both sides).
+    let declId = 0;
+    const freshVars = n => { const o = []; for (let i = 0; i < n; i++) o.push("_d" + (declId++)); return o; };
 
     function leaf() {
         const r = rng();
@@ -144,10 +154,48 @@ function makeGen(rng) {
 
     // for…in / for…of loops over fixed structures (bounded — no infinite loops).
     function loopStmt() {
-        switch ((rng() * 3) | 0) {
+        switch ((rng() * 4) | 0) {
             case 0: return "for(var _fk in obj){m1+=(\"\"+_fk);}";
             case 1: return "for(var _fx of arr){m2+=_fx;}";
-            default: return "for(var _fc of \"ab\"){m3+=_fc;}";
+            case 2: return "for(var _fc of \"ab\"){m3+=_fc;}";
+            // for…of with a destructuring binding (array / object pattern).
+            default: return "for(const [_lk,_lv] of [[1,2],[3,4]]){m1+=_lk*_lv;}";
+        }
+    }
+
+    // Destructuring declarations and assignments over the fixed sources, folding
+    // numeric results into the accumulators (`|0` / length keep values numeric so
+    // native and VM outcomes stay comparable). Covers holes, defaults, rename,
+    // computed keys, array/object rest, nesting, and assignment targets.
+    function destructureStmt() {
+        switch ((rng() * 5) | 0) {
+            case 0: { const [a, b, c] = freshVars(3);
+                return "{let [" + a + ",," + b + "=" + intLit() + ",..." + c + "]=" + pick(ARR_SRC) +
+                    ";m1+=((" + a + "|0)+(" + b + "|0)+" + c + ".length);}"; }
+            case 1: { const [a, b] = freshVars(2);
+                return "{let {x:" + a + "=" + intLit() + ",y:" + b + "}=" + pick(OBJ_SRC) +
+                    ";m2+=((" + a + "|0)+(\"\"+" + b + ").length);}"; }
+            case 2: { const [a] = freshVars(1); const key = pick(["\"x\"", "\"val\"", "\"k\""]);
+                return "{let {[" + key + "]:" + a + "=7}=" + pick(OBJ_SRC) + ";m3+=(\"\"+" + a + ").length;}"; }
+            case 3: { const [a, b] = freshVars(2);
+                return "{let {z:{w:" + a + "=0}={}}=" + pick(["obj", "{z:{w:3}}", "{}"]) +
+                    ";let [" + b + "=1]=arr;m1+=((" + a + "|0)+(" + b + "|0));}"; }
+            default:
+                return "[m2,m3]=[m3,m2];"; // assignment destructuring (swap)
+        }
+    }
+
+    // Functions whose parameters use patterns / defaults / rest, invoked inline.
+    function funcStmt() {
+        switch ((rng() * 4) | 0) {
+            case 0: { const [p, q] = freshVars(2);
+                return "m1+=(function([" + p + "," + q + "=5]){return (" + p + "|0)+(" + q + "|0);})(" + pick(ARR_SRC) + ");"; }
+            case 1: { const [p, q] = freshVars(2);
+                return "m2+=(function({x:" + p + "=1,y:" + q + "=2}){return (" + p + "|0)+(" + q + "|0);})(" + pick(OBJ_SRC) + ");"; }
+            case 2: { const [p, q] = freshVars(2);
+                return "m3+=(function(" + p + ",..." + q + "){return (" + p + "|0)+" + q + ".length;})(" + pick(["1,2,3", "n1,n2", "9", ""]) + ");"; }
+            default: { const [p, q] = freshVars(2);
+                return "m1+=((({" + p + "=1}={}," + q + "=2)=>(" + p + "|0)+(" + q + "|0)))(" + pick(["{x:1}", "undef", "{}"]) + ");"; }
         }
     }
 
@@ -156,6 +204,8 @@ function makeGen(rng) {
         let body = "";
         for (let i = 0; i < k; i++) body += stmt();
         if (chance(0.3)) body += loopStmt();
+        if (chance(0.5)) body += destructureStmt();
+        if (chance(0.4)) body += funcStmt();
         const depth = 2 + ((rng() * 3) | 0);
         return { body: body, tail: "globalThis.r=(" + expr(depth) + ");" };
     }

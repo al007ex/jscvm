@@ -1,7 +1,7 @@
 
 import {parse} from "acorn";
 import { traverse } from "estraverse";
-import { GenerateArrayExpression, GenerateAssignmentExpression, GenerateBinaryExpression, GenerateBlockStatement, GenerateBreakStatement, GenerateContinueStatement, GenerateByteCode, GenerateCallExpression, GenerateChainExpression, GenerateArrowFunctionExpression, GenerateConditionalExpression, GenerateDebuggerStatement, GenerateDoWhileStatement, GenerateExpressionStatement, GenerateForStatement, GenerateForInStatement, GenerateFunctionDeclaration, GenerateFunctionExpression, GenerateIdentifier, GenerateIfStatement, GenerateLiteral, GenerateLogicalExpression, GenerateMemberExpression, GenerateNewExpression, GenerateObjectExpression, GenerateProgram, GenerateProperty, GenerateReturnStatement, GenerateSequenceExpression, GenerateSwitchStatement, GenerateTemplateLiteral, GenerateThisExpression, GenerateThrowStatement, GenerateTryStatement, GenerateUnaryExpression, GenerateUpdateExpression, GenerateVariableDeclaration, GenerateVariableDeclarator, GenerateWhileStatement } from "./ASTCodegen";
+import { GenerateArrayExpression, GenerateAssignmentExpression, GenerateBinaryExpression, GenerateBlockStatement, GenerateBreakStatement, GenerateContinueStatement, GenerateByteCode, GenerateCallExpression, GenerateChainExpression, GenerateArrowFunctionExpression, GenerateConditionalExpression, GenerateDebuggerStatement, GenerateDoWhileStatement, GenerateExpressionStatement, GenerateForStatement, GenerateForInStatement, GenerateFunctionDeclaration, GenerateFunctionExpression, GenerateIdentifier, GenerateIfStatement, GenerateLiteral, GenerateLogicalExpression, GenerateMemberExpression, GenerateNewExpression, GenerateObjectExpression, GenerateProgram, GenerateProperty, GenerateReturnStatement, GenerateSequenceExpression, GenerateSwitchStatement, GenerateTemplateLiteral, GenerateThisExpression, GenerateThrowStatement, GenerateTryStatement, GenerateUnaryExpression, GenerateUpdateExpression, GenerateVariableDeclaration, GenerateVariableDeclarator, GenerateWhileStatement, collectPatternNames } from "./ASTCodegen";
 import { Label } from "./Label";
 import { Strings } from "./Strings";
 import { BlockStatement, ThrowStatement, SequenceExpression, ConditionalExpression, TryStatement, BreakStatement, SwitchStatement, LogicalExpression, NewExpression, DebuggerStatement, ArrayExpression, ThisExpression, FunctionExpression, Property, MemberExpression, ForStatement, ObjectExpression, UnaryExpression, UpdateExpression, ReturnStatement, CallExpression, FunctionDeclaration, Identifier, AssignmentExpression, VariableDeclaration, WhileStatement, BinaryExpression, Literal, Node, VariableDeclarator, IfStatement, Program, ExpressionStatement } from "estree";
@@ -120,6 +120,16 @@ export class Scope{
         this.addDefinition(name);
     }
 
+    // Register every name bound by a parameter list as a local definition. Params
+    // may be plain identifiers, defaults, rest, or array/object destructuring
+    // patterns, each of which can bind several names (native codegen in
+    // ASTCodegen.emitParams binds them from the call arguments).
+    addParamDefinitions(params: any[]){
+        let names: string[] = [];
+        params.forEach(param => collectPatternNames(param, names));
+        names.forEach(name => this.varDeclaration(name));
+    }
+
     functionExpression(node: FunctionExpression){
         if(node === this.node){
            
@@ -129,15 +139,9 @@ export class Scope{
             if(this.reference_set.has(name)) this.reference_set.delete(name);
             this.addDefinition(name);
 
-            node.params.forEach(param => {
-                if(param.type !== "Identifier") throw("Ivalid parameter type");
-                let name = param.name;
-                if(this.definition_set.has(name)) return;
-                if(this.reference_set.has(name)) this.reference_set.delete(name);
-                this.addDefinition(name);
-            })
+            this.addParamDefinitions(node.params);
             this.traverse(node.body);
-            
+
             return;
         }
     }
@@ -146,13 +150,7 @@ export class Scope{
         if(node === this.node){
             // Arrows do NOT declare their own `arguments` — it is inherited
             // lexically. Only the parameters become local definitions.
-            node.params.forEach(param => {
-                if(param.type !== "Identifier") throw("Unsupported arrow function parameter type: " + param.type);
-                let name = param.name;
-                if(this.definition_set.has(name)) return;
-                if(this.reference_set.has(name)) this.reference_set.delete(name);
-                this.addDefinition(name);
-            })
+            this.addParamDefinitions(node.params);
             this.traverse(node.body);
 
             return;
@@ -166,15 +164,9 @@ export class Scope{
             if(this.reference_set.has(name)) this.reference_set.delete(name);
             this.addDefinition(name);
 
-            node.params.forEach(param => {
-                if(param.type !== "Identifier") throw("Ivalid parameter type");
-                let name = param.name;
-                if(this.definition_set.has(name)) return;
-                if(this.reference_set.has(name)) this.reference_set.delete(name);
-                this.addDefinition(name);
-            })
+            this.addParamDefinitions(node.params);
             this.traverse(node.body);
-            
+
             return;
         }
         //if the var has not been defined as a var
@@ -192,8 +184,14 @@ export class Scope{
             enter(node){
                 switch(node.type){
                     case "VariableDeclarator": {
-                        if(node.id.type !== "Identifier") throw new Error("Scope.js");
-                        scope.varDeclaration(node.id.name);
+                        if(node.id.type === "Identifier"){
+                            scope.varDeclaration(node.id.name);
+                        }else{
+                            // Destructuring declaration: register every bound name.
+                            let names: string[] = [];
+                            collectPatternNames(node.id, names);
+                            names.forEach(n => scope.varDeclaration(n));
+                        }
                         break;
                     }
                     case "FunctionDeclaration": {

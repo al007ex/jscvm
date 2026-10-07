@@ -628,3 +628,17 @@ a[Op.JumpToStart] = function(block){
 a[Op.Pop] = function(block){
     block._stack.pop();
 }
+
+// Collect the keys a `for…in` would enumerate for the object on the stack, as an
+// array. The emulator is itself JavaScript, so a native for-in gives the exact
+// enumeration (own + inherited enumerable string keys, host order). null and
+// undefined enumerate nothing. Codegen then iterates this array (see
+// GenerateForInStatement).
+a[Op.ForInKeys] = function(block){
+    let obj = block._stack.pop();
+    let keys = [];
+    if(obj !== null && obj !== undefined){
+        for(let k in obj) keys.push(k);
+    }
+    block._stack.push(keys);
+}

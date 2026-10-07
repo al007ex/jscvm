@@ -21,8 +21,6 @@
 //                           (@babel/plugin-transform-parameters)
 //   - for…of              -> iterator-protocol / indexed loop
 //                           (@babel/plugin-transform-for-of)
-//   - for…in              -> indexed loop over a collected keys array
-//                           (forInLoweringPlugin, below)
 //
 // It is intentionally structured so more lowering steps can be added later: add
 // a step to `transpileForVm` and, if it introduces runtime helpers, follow the
@@ -150,66 +148,6 @@ function catchParamHygienePlugin(): any {
     };
 }
 
-// Babel plugin: lower `for (LEFT in RIGHT) BODY` to an indexed loop over a keys
-// array, since the VM has no ForInStatement. A runtime helper collects the
-// enumerable keys (own + inherited, deduped) WITHOUT using `for…in` itself, so
-// the lowering is not circular. This also lowers the `for (var n in r)` inside
-// the object-rest helper injected by @babel/plugin-transform-object-rest-spread,
-// which is what makes `{ a, ...rest }` work.
-const FOR_IN_HELPER = "_jscvmForInKeys";
-function forInLoweringPlugin(babel: any): any {
-    const t = babel.types;
-    const buildHelper = babel.template(`
-        function NAME(o) {
-            var keys = [], seen = Object.create(null);
-            while (o != null) {
-                var own = Object.keys(o);
-                for (var i = 0; i < own.length; i++) {
-                    var key = own[i];
-                    if (seen[key] !== true) { seen[key] = true; keys.push(key); }
-                }
-                o = Object.getPrototypeOf(o);
-            }
-            return keys;
-        }
-    `);
-    return {
-        pre() { this.jscvmForInUsed = false; },
-        visitor: {
-            ForInStatement(path: any) {
-                this.jscvmForInUsed = true;
-                const left = path.node.left;
-                const right = path.node.right;
-                const body = path.node.body;
-                const keysId = path.scope.generateUidIdentifier("keys");
-                const idxId = path.scope.generateUidIdentifier("i");
-                const elem = t.memberExpression(keysId, idxId, true);
-                // Assign the current key to whatever the loop's LEFT was.
-                const assign = t.isVariableDeclaration(left)
-                    ? t.variableDeclaration(left.kind, [t.variableDeclarator(left.declarations[0].id, elem)])
-                    : t.expressionStatement(t.assignmentExpression("=", left, elem));
-                const bodyStmts = t.isBlockStatement(body) ? body.body : [body];
-                const loop = t.forStatement(
-                    t.variableDeclaration("var", [
-                        t.variableDeclarator(keysId, t.callExpression(t.identifier(FOR_IN_HELPER), [right])),
-                        t.variableDeclarator(idxId, t.numericLiteral(0))
-                    ]),
-                    t.binaryExpression("<", idxId, t.memberExpression(keysId, t.identifier("length"))),
-                    t.updateExpression("++", idxId, false),
-                    t.blockStatement([assign].concat(bodyStmts))
-                );
-                path.replaceWith(loop);
-            },
-            Program: {
-                exit(path: any) {
-                    if (!this.jscvmForInUsed || path.scope.hasBinding(FOR_IN_HELPER)) return;
-                    path.unshiftContainer("body", buildHelper({ NAME: t.identifier(FOR_IN_HELPER) }));
-                }
-            }
-        }
-    };
-}
-
 // Resolve the helper imports emitted by the async plugin: inline the needed
 // helper definitions and drop the import statements.
 function resolveAsyncHelpers(code: string): string {
@@ -255,12 +193,6 @@ export function transpileForVm(code: string): string {
         deps().forOfPlugin
     ]);
     if (destructuringLowered !== null) out = destructuringLowered;
-
-    //    Lower `for…in` to an indexed loop over a keys array. Runs AFTER the pass
-    //    above so it also lowers the `for (var n in r)` inside that pass's injected
-    //    object-rest helper — which is what makes object rest (`{a, ...rest}`) work.
-    const forInLowered = tryTransform(out, [forInLoweringPlugin]);
-    if (forInLowered !== null) out = forInLowered;
 
     // 2. Lower async/await to Promise chains. On failure, leave async untouched
     //    (the VM will then report a clear error on the remaining `await`), and

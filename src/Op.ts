@@ -94,6 +94,7 @@ export const _Op: { [key: string]: number } = {
     CompoundAssignProperty: id++,
     CreateArrow: id++,
     Pop: id++,
+    ForInKeys: id++,
 };
 export const OpRemap: { [key: string]: number } = {};
 export const Op: { [key: string]: number } = {};
@@ -211,4 +212,5 @@ export const OpcodeString: { [key: number]: string } = {
     [_Op.CompoundAssignProperty] : "CompoundAssignProperty",
     [_Op.CreateArrow] : "CreateArrow",
     [_Op.Pop] : "Pop",
+    [_Op.ForInKeys] : "ForInKeys",
 };

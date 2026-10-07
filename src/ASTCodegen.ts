@@ -51,6 +51,10 @@ export function emitPop(scope: Scope){
     __writeI8(scope, Op.Pop);
 }
 
+export function emitForInKeys(scope: Scope){
+    __writeI8(scope, Op.ForInKeys);
+}
+
 export function emitInstanceOf(scope: Scope){
     __writeI8(scope, Op.InstanceOf);
 }
@@ -1261,6 +1265,93 @@ export function GenerateForStatement(node: ForStatement, scope: Scope){
     if(skip_body_label) skip_body_label.setTarget();
 
     ctx.breaks.forEach(label => label.setTarget());
+}
+
+// for (LEFT in RIGHT) BODY — native. Snapshot RIGHT's enumerable keys into a
+// scratch array (ForInKeys), then iterate it by index, assigning each key to
+// LEFT. Mirrors the for-loop's label/continue structure (continue -> increment,
+// break -> exit).
+export function GenerateForInStatement(node: any, scope: Scope){
+    let tKeys = scope.allocTemp();
+    let tIdx = scope.allocTemp();
+
+    // tKeys = ForInKeys(RIGHT)
+    scope.generate(node.right);
+    emitForInKeys(scope);
+    emitAssignValue(scope, tKeys);
+    emitPop(scope);
+
+    // tIdx = 0
+    emitI8(scope, 0);
+    emitAssignValue(scope, tIdx);
+    emitPop(scope);
+
+    // top:  if (tIdx < tKeys.length) continue into the body, else exit
+    let top = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+    top.setTarget();
+    emitGetVariableValue(scope, tIdx);
+    emitGetVariableValue(scope, tKeys);
+    emitString(scope, scope.getStringId("length"));
+    emitGetObjectProperty(scope);
+    emitLessThan(scope);
+    emitJumpIfFalse(scope);
+    let exit = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+    exit.setOrigin();
+
+    // LEFT = tKeys[tIdx]
+    emitGetVariableValue(scope, tKeys);
+    emitGetVariableValue(scope, tIdx);
+    emitGetObjectProperty(scope);
+    emitForInAssign(node.left, scope);
+
+    let ctx: LoopContext = { breaks: [], continues: [], continueOffset: 0, finallyDepth: finallyStack.length };
+    loopStack.push(ctx);
+    scope.generate(node.body);
+    loopStack.pop();
+
+    // continue -> increment
+    let continueOffset = scope.offset;
+    ctx.continues!.forEach(label => { label.destination = continueOffset; });
+
+    emitPrePlusPlus(scope, tIdx);   // tIdx++
+    emitPop(scope);
+
+    emitJMP(scope);
+    top.setOrigin();
+
+    exit.setTarget();
+    ctx.breaks.forEach(label => label.setTarget());
+
+    scope.freeTemp(2);
+}
+
+// Assign the value on top of the stack to a for-in LEFT target, leaving the
+// stack clean. LEFT is `var x` / `let x` / a bare identifier (local or global),
+// or a member expression (`obj.p` / `obj[k]`).
+function emitForInAssign(left: any, scope: Scope){
+    let target = left.type === "VariableDeclaration" ? left.declarations[0].id : left;
+    if(target.type === "Identifier"){
+        let id = scope.getVarId(target.name);
+        if(id === -1){
+            emitString(scope, scope.getStringId(target.name));
+            emitAssignValueToGlobal(scope);
+        }else{
+            emitAssignValue(scope, id);
+        }
+        emitPop(scope);
+    }else if(target.type === "MemberExpression"){
+        scope.generate(target.object);
+        let property = target.property;
+        if(property.type === "Identifier" && !target.computed){
+            emitString(scope, scope.getStringId(property.name));
+        }else{
+            scope.generate(property);
+        }
+        emitSetObjectProperty(scope);
+        emitPop(scope);
+    }else{
+        throw("Unsupported for-in target: " + target.type);
+    }
 }
 
 export function GenerateVariableDeclaration(node: VariableDeclaration, scope: Scope){

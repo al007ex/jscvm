@@ -264,6 +264,9 @@ async function main() {
     await expect("for-in inherited enumerable", "function A(){}A.prototype.inh=1;var o=new A();o.own=2;var ks=[];for(var k in o)ks.push(k);globalThis.r=ks.sort().join(',');", "inh,own");
     await expect("for-in break/continue", "var o={a:1,b:2,c:3,d:4};var s='';for(var k in o){if(k==='b')continue;if(k==='d')break;s+=k;}globalThis.r=s;", "ac");
     await expect("for-in null safe", "var s=0;for(var k in null)s++;globalThis.r=s;", 0);
+    await expect("for-in member target", "var o={a:1,b:2};var dst={};for(dst.k in o){}globalThis.r=dst.k;", "b");
+    await expect("for-in let per-iteration", "var f=[];var o={a:1,b:2,c:3};for(let k in o)f.push(function(){return k;});globalThis.r=f.map(function(g){return g();}).join(',');", "a,b,c");
+    await expect("for-in nested", "var o={a:1,b:2},p={x:1};var s='';for(var k in o)for(var j in p)s+=k+j;globalThis.r=s;", "axbx");
     await expect("object rest basic", "var {a,...rest}={a:1,b:2,c:3};globalThis.r=a+'/'+JSON.stringify(rest);", "1/{\"b\":2,\"c\":3}");
     await expect("object rest empty", "var {a,...rest}={a:1};globalThis.r=JSON.stringify(rest);", "{}");
     await expect("object rest with rename", "var {a:x,...y}={a:1,b:2};globalThis.r=x+'/'+JSON.stringify(y);", "1/{\"b\":2}");

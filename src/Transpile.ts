@@ -11,12 +11,11 @@
 //   - async / await      -> Promise chains (babel-plugin-transform-async-to-promises)
 //   - { ...a } / { a, ...r } -> Object helpers
 //                           (@babel/plugin-transform-object-rest-spread)
-//   - for…of              -> iterator-protocol / indexed loop
-//                           (@babel/plugin-transform-for-of)
 //
-// Destructuring and default/rest parameters are now compiled natively (see
-// ASTCodegen); the object-rest-spread pass above still strips object rest out of
-// patterns before that native codegen runs.
+// Destructuring, default/rest parameters, and for…of are now compiled natively
+// (see ASTCodegen); the object-rest-spread pass still strips object rest out of
+// patterns — including a for…of binding pattern — before that native codegen
+// runs, so the codegen never sees object rest in a pattern.
 //
 // It is intentionally structured so more lowering steps can be added later: add
 // a step to `transpileForVm` and, if it introduces runtime helpers, follow the
@@ -35,7 +34,6 @@ let _deps: {
     asyncPlugin: any;
     blockScopingPlugin: any;
     objectRestSpreadPlugin: any;
-    forOfPlugin: any;
     helpersSource: string;
 } | null = null;
 
@@ -48,7 +46,6 @@ function deps() {
             asyncPlugin: require("babel-plugin-transform-async-to-promises"),
             blockScopingPlugin: require("@babel/plugin-transform-block-scoping"),
             objectRestSpreadPlugin: require("@babel/plugin-transform-object-rest-spread"),
-            forOfPlugin: require("@babel/plugin-transform-for-of"),
             helpersSource: require("babel-plugin-transform-async-to-promises/helpers-string").code
         };
     }
@@ -161,20 +158,19 @@ export function transpileForVm(code: string): string {
     //    reports a clear compile error on the construct it can't handle.
     //
     //    (Nullish `??`, logical assignment `&&=`/`||=`/`??=`, optional chaining
-    //    `?.`, `for…in`, array/call/new spread, destructuring, and default/rest
-    //    parameters are now compiled natively — see ASTCodegen.)
+    //    `?.`, `for…in`, `for…of`, array/call/new spread, destructuring, and
+    //    default/rest parameters are now compiled natively — see ASTCodegen.)
     //
-    //    Object rest/spread (`{...a}`, `{a, ...r}`) and for…of remain lowered
-    //    here. Object rest/spread runs first so it strips object rest out of every
-    //    destructuring pattern (declarations, assignment targets and params alike),
-    //    leaving only non-rest patterns for the native destructuring codegen. Any
-    //    object/iterator helpers it emits are plain functions the VM runs;
-    //    introduced temp vars are lowered by the block-scoping pass below.
-    const objectAndForOfLowered = tryTransform(out, [
-        deps().objectRestSpreadPlugin,
-        deps().forOfPlugin
+    //    Object rest/spread (`{...a}`, `{a, ...r}`) remains lowered here. It strips
+    //    object rest out of every destructuring pattern — declarations, assignment
+    //    targets, params, and for…of bindings alike — leaving only non-rest
+    //    patterns for the native destructuring codegen. Any object helpers it emits
+    //    are plain functions the VM runs; introduced temp vars are lowered by the
+    //    block-scoping pass below.
+    const objectRestLowered = tryTransform(out, [
+        deps().objectRestSpreadPlugin
     ]);
-    if (objectAndForOfLowered !== null) out = objectAndForOfLowered;
+    if (objectRestLowered !== null) out = objectRestLowered;
 
     // 2. Lower async/await to Promise chains. On failure, leave async untouched
     //    (the VM will then report a clear error on the remaining `await`), and

@@ -7,9 +7,11 @@
 // Generates random programs drawn ONLY from the language subset the VM supports
 // (arithmetic, comparisons, logical/nullish, ternary, unary, member access —
 // including computed member reads and computed method calls — object/array
-// literals, function calls, optional chaining, and logical assignment), runs
-// each one twice — once natively in a Node `vm` context, once through
-// `obfuscate()` + the VM — and compares the outcomes.
+// literals, function calls, optional chaining, logical assignment, spread,
+// destructuring declarations/assignments, pattern/default/rest parameters, and
+// for…in / for…of over arrays, strings, Sets and Maps), runs each one twice —
+// once natively in a Node `vm` context, once through `obfuscate()` + the VM —
+// and compares the outcomes.
 //
 // A case passes when both runs produce the same value (compared via a canonical
 // `repr`) or both throw at runtime. It fails when the values differ, or when one
@@ -65,6 +67,7 @@ const ENV = [
     "var keys={k:\"val\"};var getKey=\"get\";",
     "var farr=[function(){return 100;},function(){return 200;}];var idx=1;",
     "var fwd=function(){return Math.max.apply(null,arguments);};", // arguments-forwarding idiom
+    "var set1=new Set([1,2,3]);var map1=new Map([[\"a\",1],[\"b\",2]]);",
     "var m1=0,m2=1,m3=2;"
 ].join("");
 
@@ -154,10 +157,14 @@ function makeGen(rng) {
 
     // for…in / for…of loops over fixed structures (bounded — no infinite loops).
     function loopStmt() {
-        switch ((rng() * 4) | 0) {
+        switch ((rng() * 8) | 0) {
             case 0: return "for(var _fk in obj){m1+=(\"\"+_fk);}";
             case 1: return "for(var _fx of arr){m2+=_fx;}";
             case 2: return "for(var _fc of \"ab\"){m3+=_fc;}";
+            case 3: return "for(var _fs of set1){m1+=_fs;}";                        // Set iteration
+            case 4: return "for(var [_mk,_mv] of map1){m2+=_mk+_mv;}";              // Map entries + destructuring
+            case 5: return "for(var _fb of arr){if(_fb>15)break;m3+=_fb;}";        // for…of + break
+            case 6: return "for(var _fo of arr){if(_fo===20)continue;m1+=_fo;}";   // for…of + continue
             // for…of with a destructuring binding (array / object pattern).
             default: return "for(const [_lk,_lv] of [[1,2],[3,4]]){m1+=_lk*_lv;}";
         }
@@ -252,7 +259,7 @@ function makeContext() {
     const ctx = {
         Object, Function, Array, String, Number, Boolean, Math, RegExp, Reflect,
         JSON, Symbol, Date, Error, TypeError, Uint8Array, Float64Array, Buffer,
-        Promise, module: { exports: {} }
+        Promise, Set, Map, module: { exports: {} }
     };
     ctx.globalThis = ctx;
     vm.createContext(ctx);

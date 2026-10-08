@@ -70,6 +70,9 @@ export function emitApplyCall(scope: Scope){
 export function emitConstructSpread(scope: Scope){
     __writeI8(scope, Op.ConstructSpread);
 }
+export function emitGetIterator(scope: Scope){
+    __writeI8(scope, Op.GetIterator);
+}
 
 // Does this element/argument list contain a spread (`...x`)?
 function hasSpread(list: any[]): boolean {
@@ -1740,6 +1743,78 @@ function emitForInAssign(left: any, scope: Scope){
     }else{
         throw("Unsupported for-in target: " + target.type);
     }
+}
+
+// `for (LEFT of RIGHT) BODY`, compiled with the iterator protocol:
+//
+//   let it = RIGHT[Symbol.iterator](), step;
+//   while(!(step = it.next()).done){ LEFT = step.value; BODY }
+//
+// GetIterator resolves the well-known symbol in the handler, and next/done/value
+// are ordinary property/method ops, so any iterable works (arrays, strings,
+// Set/Map, generators, arguments). break/continue reuse the standard loop
+// machinery. Object rest in LEFT is lowered to a body declaration by the
+// object-rest-spread pass, so LEFT here is only a plain target or a non-rest
+// array/object pattern.
+//
+// Note: on an early exit (break / return / throw) the iterator's optional
+// `return()` is not invoked — a narrow divergence that affects only iterators
+// doing cleanup in a `return` method (e.g. a generator with `try/finally`);
+// value iteration, including over never-ending generators, is exact.
+export function GenerateForOfStatement(node: any, scope: Scope){
+    let tIter = scope.allocTemp();
+    let tStep = scope.allocTemp();
+
+    // it = RIGHT[Symbol.iterator]()
+    scope.generate(node.right);
+    emitGetIterator(scope);
+    emitAssignValue(scope, tIter);
+    emitPop(scope);
+
+    // top:  step = it.next()
+    let top = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+    top.setTarget();
+    emitString(scope, scope.getStringId("next"));
+    emitGetVariableValue(scope, tIter);
+    emitObjectPropertyCall(scope, 0);   // it.next() with this = it
+    emitAssignValue(scope, tStep);
+    emitPop(scope);
+
+    // if (step.done) exit
+    emitGetVariableValue(scope, tStep);
+    emitString(scope, scope.getStringId("done"));
+    emitGetObjectProperty(scope);
+    emitNotSymbol(scope);               // loop while !done
+    emitJumpIfFalse(scope);
+    let exit = scope.makeLabel(Uint32Array.BYTES_PER_ELEMENT);
+    exit.setOrigin();
+
+    // LEFT = step.value
+    emitGetVariableValue(scope, tStep);
+    emitString(scope, scope.getStringId("value"));
+    emitGetObjectProperty(scope);
+    if(node.left.type === "VariableDeclaration"){
+        emitDestructure(node.left.declarations[0].id, scope, true);
+    }else{
+        emitDestructure(node.left, scope, false);
+    }
+
+    let ctx: LoopContext = { breaks: [], continues: [], continueOffset: 0, finallyDepth: finallyStack.length };
+    loopStack.push(ctx);
+    scope.generate(node.body);
+    loopStack.pop();
+
+    // continue -> back to the top (re-evaluate it.next())
+    let continueOffset = scope.offset;
+    ctx.continues!.forEach(label => { label.destination = continueOffset; });
+
+    emitJMP(scope);
+    top.setOrigin();
+
+    exit.setTarget();
+    ctx.breaks.forEach(label => label.setTarget());
+
+    scope.freeTemp(2);
 }
 
 export function GenerateVariableDeclaration(node: VariableDeclaration, scope: Scope){

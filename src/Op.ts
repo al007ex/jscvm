@@ -100,6 +100,7 @@ export const _Op: { [key: string]: number } = {
     ArrayAppendSpread: id++,
     ApplyCall: id++,
     ConstructSpread: id++,
+    GetIterator: id++,
 };
 export const OpRemap: { [key: string]: number } = {};
 export const Op: { [key: string]: number } = {};
@@ -223,4 +224,5 @@ export const OpcodeString: { [key: number]: string } = {
     [_Op.ArrayAppendSpread] : "ArrayAppendSpread",
     [_Op.ApplyCall] : "ApplyCall",
     [_Op.ConstructSpread] : "ConstructSpread",
+    [_Op.GetIterator] : "GetIterator",
 };

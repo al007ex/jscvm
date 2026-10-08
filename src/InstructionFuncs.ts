@@ -685,3 +685,13 @@ a[Op.ConstructSpread] = function(block){
     let fn = block._stack.pop();
     block._stack.push(construct(fn, args));
 }
+
+// [iterable] -> iterable[Symbol.iterator](). Starts a for…of over any iterable
+// (arrays, strings, Set/Map, generators, arguments). Resolving the well-known
+// symbol here keeps it out of the bytecode string table and the property
+// mangler. A non-iterable throws, matching native `for…of`.
+a[Op.GetIterator] = function(block){
+    let obj = block._stack.pop();
+    let fn = ensureCallable(obj[Symbol.iterator]);
+    block._stack.push(__ap.call(fn, obj, []));
+}
